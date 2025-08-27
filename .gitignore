@@ -15,3 +15,5 @@ build/
 htmlcov/
 *.log
 *.tmp
+
+outputs/
