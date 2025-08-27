@@ -1,0 +1,4 @@
+time:
+  horizon_min: 180
+  window_min: 30
+  step_min: 30
