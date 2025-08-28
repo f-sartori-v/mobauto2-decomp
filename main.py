@@ -1,6 +1,6 @@
 # em src/main.py
 from pathlib import Path
-import shutil, subprocess, os, yaml, json
+import platform, shutil, subprocess, os, yaml, json
 
 ROOT = Path(__file__).resolve().parents[0]
 CONFIG = ROOT / "configs" / "base.yaml"
@@ -35,5 +35,32 @@ def run_basic():
     else:
         print("[SKIP] Sem .exe do subproblem")
 
+def build_subproblem(C_SRC: Path, C_OUT: Path):
+    sys = platform.system().lower()
+    inc = os.getenv("CPLEX_INC")
+    lib = os.getenv("CPLEX_LIB")
+
+    if sys == "windows":
+        if not shutil.which("cl"):
+            print("[ERRO] MSVC 'cl' não encontrado.")
+            return False
+        cmd = f'cl /nologo /O2 /MD /I"{inc}" "{C_SRC}" /Fe:"{C_OUT}" /link /LIBPATH:"{lib}" cplex*.lib'
+    elif sys == "darwin":  # macOS
+        if not shutil.which("clang"):
+            print("[ERRO] clang não encontrado.")
+            return False
+
+        cmd = f'clang -O2 -I"{inc}" "{C_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
+    else:  # linux
+        cc = shutil.which("gcc") or shutil.which("clang")
+        if not cc:
+            print("[ERRO] gcc/clang não encontrado.")
+            return False
+        cmd = f'{cc} -O2 -I"{inc}" "{C_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
+
+    print(f"[build] {cmd}")
+    return subprocess.call(cmd, shell=True) == 0
+
 if __name__ == "__main__":
+    build_subproblem(C_SRC, C_EXE)
     run_basic()
