@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "/Applications/CPLEX_Studio2211/cplex/include/ilcplex/cplex.h"
+#include <time.h>
 
 static void die(CPXENVptr env, CPXLPptr lp, const char* msg) {
     fprintf(stderr, "ERROR: %s\n", msg);
@@ -12,6 +13,7 @@ static void die(CPXENVptr env, CPXLPptr lp, const char* msg) {
 }
 
 int main(void) {
+    clock_t tic = clock();
     int status = 0;
 
     /* Abrir ambiente e problema */
@@ -84,6 +86,10 @@ int main(void) {
     if (!x) die(env, lp, "calloc x failed");
     status = CPXgetmipx(env, lp, x, 0, T - 1);
     if (status) die(env, lp, "CPXgetmipx failed");
+
+    clock_t toc = clock();
+    double elapsed = (double)(toc - tic) / CLOCKS_PER_SEC;
+    printf("Elapsed CPU time: %.3f s\n", elapsed);
 
     /* Imprime resultado */
     printf("Obj = %.3f (negativo == max pax)\n", objval);

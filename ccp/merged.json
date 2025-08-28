@@ -1,0 +1,314 @@
+{
+  "base": {
+    "project_name": "MOB-AUTO2 Shuttle Scheduling Decomposition Problem",
+    "time": {
+      "horizon_min": 150,
+      "step_res": 1
+    },
+    "fleet": {
+      "nbr_shuttles": 2,
+      "shuttle_capacity": 15,
+      "battery_range": 150,
+      "recharge_rate_fast": 1.25,
+      "recharge_threshold_fast": 75,
+      "recharge_rate_moderate": 0.9,
+      "recharge_threshold_moderate": 120,
+      "recharge_rate_slow": 0.75,
+      "recharge_threshold_slow": 150
+    },
+    "operation": {
+      "trip_duration": 30,
+      "trip_distance": 28
+    },
+    "solver": {
+      "time_limit": 5,
+      "log_verbosity": "Quiet",
+      "search_type": "Auto"
+    }
+  },
+  "subproblem": {
+    "nbr_shuttles": 2,
+    "shuttles": {
+      "S0": {
+        "seq": [
+          "RET",
+          "OUT"
+        ],
+        "soc0": 30,
+        "prev_task": "CRG",
+        "delay": 25
+      },
+      "S1": {
+        "seq": [
+          "RET",
+          "OUT",
+          "RET"
+        ],
+        "soc0": 150,
+        "prev_task": "CRG",
+        "delay": 0
+      }
+    }
+  },
+  "demand": {
+    "nreq": 64,
+    "requests": [
+      {
+        "dir": "OUT",
+        "time": 18
+      },
+      {
+        "dir": "OUT",
+        "time": 69
+      },
+      {
+        "dir": "RET",
+        "time": 82
+      },
+      {
+        "dir": "OUT",
+        "time": 106
+      },
+      {
+        "dir": "OUT",
+        "time": 5
+      },
+      {
+        "dir": "RET",
+        "time": 105
+      },
+      {
+        "dir": "OUT",
+        "time": 94
+      },
+      {
+        "dir": "OUT",
+        "time": 55
+      },
+      {
+        "dir": "OUT",
+        "time": 38
+      },
+      {
+        "dir": "OUT",
+        "time": 43
+      },
+      {
+        "dir": "OUT",
+        "time": 16
+      },
+      {
+        "dir": "OUT",
+        "time": 99
+      },
+      {
+        "dir": "OUT",
+        "time": 86
+      },
+      {
+        "dir": "OUT",
+        "time": 74
+      },
+      {
+        "dir": "RET",
+        "time": 47
+      },
+      {
+        "dir": "OUT",
+        "time": 93
+      },
+      {
+        "dir": "OUT",
+        "time": 113
+      },
+      {
+        "dir": "RET",
+        "time": 45
+      },
+      {
+        "dir": "RET",
+        "time": 107
+      },
+      {
+        "dir": "RET",
+        "time": 73
+      },
+      {
+        "dir": "OUT",
+        "time": 43
+      },
+      {
+        "dir": "OUT",
+        "time": 31
+      },
+      {
+        "dir": "RET",
+        "time": 41
+      },
+      {
+        "dir": "OUT",
+        "time": 80
+      },
+      {
+        "dir": "OUT",
+        "time": 75
+      },
+      {
+        "dir": "OUT",
+        "time": 39
+      },
+      {
+        "dir": "OUT",
+        "time": 4
+      },
+      {
+        "dir": "OUT",
+        "time": 120
+      },
+      {
+        "dir": "OUT",
+        "time": 94
+      },
+      {
+        "dir": "RET",
+        "time": 6
+      },
+      {
+        "dir": "OUT",
+        "time": 90
+      },
+      {
+        "dir": "RET",
+        "time": 65
+      },
+      {
+        "dir": "RET",
+        "time": 51
+      },
+      {
+        "dir": "OUT",
+        "time": 44
+      },
+      {
+        "dir": "OUT",
+        "time": 63
+      },
+      {
+        "dir": "OUT",
+        "time": 70
+      },
+      {
+        "dir": "RET",
+        "time": 104
+      },
+      {
+        "dir": "OUT",
+        "time": 54
+      },
+      {
+        "dir": "RET",
+        "time": 14
+      },
+      {
+        "dir": "OUT",
+        "time": 84
+      },
+      {
+        "dir": "OUT",
+        "time": 63
+      },
+      {
+        "dir": "RET",
+        "time": 19
+      },
+      {
+        "dir": "OUT",
+        "time": 74
+      },
+      {
+        "dir": "RET",
+        "time": 61
+      },
+      {
+        "dir": "OUT",
+        "time": 69
+      },
+      {
+        "dir": "OUT",
+        "time": 37
+      },
+      {
+        "dir": "RET",
+        "time": 85
+      },
+      {
+        "dir": "RET",
+        "time": 67
+      },
+      {
+        "dir": "RET",
+        "time": 24
+      },
+      {
+        "dir": "OUT",
+        "time": 51
+      },
+      {
+        "dir": "OUT",
+        "time": 48
+      },
+      {
+        "dir": "OUT",
+        "time": 33
+      },
+      {
+        "dir": "OUT",
+        "time": 44
+      },
+      {
+        "dir": "OUT",
+        "time": 70
+      },
+      {
+        "dir": "OUT",
+        "time": 56
+      },
+      {
+        "dir": "OUT",
+        "time": 72
+      },
+      {
+        "dir": "OUT",
+        "time": 39
+      },
+      {
+        "dir": "RET",
+        "time": 77
+      },
+      {
+        "dir": "OUT",
+        "time": 27
+      },
+      {
+        "dir": "RET",
+        "time": 33
+      },
+      {
+        "dir": "RET",
+        "time": 116
+      },
+      {
+        "dir": "OUT",
+        "time": 106
+      },
+      {
+        "dir": "OUT",
+        "time": 36
+      },
+      {
+        "dir": "OUT",
+        "time": 117
+      }
+    ]
+  }
+}

@@ -1,4 +1,30 @@
+# General
+project_name: MOB-AUTO2 Shuttle Scheduling Decomposition Problem
+
+# Time configuration
 time:
-  horizon_min: 180
-  window_min: 30
-  step_min: 30
+  horizon_min: 150
+  step_res: 1
+
+# Fleet and shuttle specs
+fleet:
+  nbr_shuttles: 2
+  shuttle_capacity: 15        # pax
+  battery_range: 150          # range in KM
+  recharge_rate_fast: 1.25    # KM per min
+  recharge_threshold_fast: 75 # KM
+  recharge_rate_moderate: 0.90
+  recharge_threshold_moderate: 120
+  recharge_rate_slow: 0.75
+  recharge_threshold_slow: 150
+
+# Operation specs
+operation:
+  trip_duration: 30
+  trip_distance: 28
+
+# Solver configuration (CPO)
+solver:
+  time_limit: 5
+  log_verbosity: 'Quiet'        # values: quiet, terse, normal, verbose
+  search_type: 'Auto'      # values = ('DepthFirst', 'Restart', 'MultiPoint', 'IterativeDiving', 'Neighborhood', 'Auto')
