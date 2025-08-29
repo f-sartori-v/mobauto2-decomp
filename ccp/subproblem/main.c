@@ -1,9 +1,10 @@
 /* Subproblem CPLEX C API (scheduling window) */
 
 #include <stdio.h>
-#include <stdlib.h>
-#include "/Applications/CPLEX_Studio2211/cplex/include/ilcplex/cplex.h"
 #include <time.h>
+#include "params.h"
+#include "/Applications/CPLEX_Studio2211/cplex/include/ilcplex/cplex.h"
+#include "third_party/cjson/cJSON.h"
 
 static void die(CPXENVptr env, CPXLPptr lp, const char* msg) {
     fprintf(stderr, "ERROR: %s\n", msg);
@@ -12,8 +13,34 @@ static void die(CPXENVptr env, CPXLPptr lp, const char* msg) {
     exit(1);
 }
 
-int main(void) {
+void parse_params_and_fleet(const char* merged_path, Params* P, Fleet* F, DemandPool* D);
+
+int main(int argc, char** argv){
     clock_t tic = clock();
+
+    if (argc < 2) { fprintf(stderr,"usage: subproblem <merged.json>\n"); return 2; }
+
+    Params P = {0};
+    Fleet  F = {0};
+    DemandPool D = {0};
+
+    parse_params_and_fleet(argv[1], &P, &F, &D);
+
+    // sanity print only
+    printf("[ok] horizon=%d cap=%d trip_dist=%d Emax=%d shuttles=%d requests=%d\n",
+           P.horizon_min, P.cap, P.trip_dist, P.battery_range, P.nbr_shuttles, D.n);
+
+    for(int i=0;i<F.n;i++){
+        Shuttle* S=&F.arr[i];
+        printf("S%d: T=%d soc0=%d prev=%s delay=%d seq=[", i, S->T, S->soc0, S->prev, S->delay);
+        for(int t=0;t<S->T;t++){ printf("%s%s", S->seq[t], (t+1<S->T)?",":""); }
+        printf("]\n");
+    }
+
+    // cleanup
+    free_fleet(&F);
+    free_demand(&D);
+
     int status = 0;
 
     /* Abrir ambiente e problema */
@@ -27,8 +54,8 @@ int main(void) {
     int Q = 1;                /* nº de shuttles na janela */
     int T = 5;                /* nº slots na janela */
     int cap = 15;             /* capacidade por viagem */
-    double demand[5] = {10, 8, 12, 6, 5};  /* demanda exógena por slot */
     int L = 30;               /* km consumidos por trip */
+    int demand = 3;
     int Emax = 150;           /* autonomia total em km (energia disponível) */
     (void)Q;                  /* evita warning se Q não for usado */
 
@@ -40,7 +67,7 @@ int main(void) {
     if (!obj || !lb || !ub || !ctype) die(env, lp, "calloc failed");
 
     for (int t = 0; t < T; t++) {
-        int served = demand[t] < cap ? (int)demand[t] : cap; /* pax servidos se operar */
+        int served = demand < cap ? (int)demand : cap; /* pax servidos se operar */
         obj[t] = - (double)served;   /* max served -> min -served */
         lb[t] = 0.0;
         ub[t] = 1.0;
@@ -98,7 +125,7 @@ int main(void) {
         int decide = (x[t] > 0.5) ? 1 : 0;
         trips += decide;
         energy_used += decide * L;
-        pax += decide * (demand[t] < cap ? (int)demand[t] : cap);
+        pax += decide * (demand < cap ? (int)demand : cap);
         printf("t=%d  x_t=%d\n", t, decide);
     }
     printf("trips=%d  energy_used=%d  pax_served=%d\n", trips, energy_used, pax);

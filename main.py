@@ -7,6 +7,10 @@ ROOT = Path(__file__).resolve().parents[0]
 CONFIG = ROOT / "configs" / "base.yaml"
 C_SRC = ROOT / "ccp" / "subproblem" / "main.c"
 
+CJSON_DIR = ROOT / "ccp" / "subproblem" / "third_party" / "cjson"
+CJSON_SRC = CJSON_DIR / "cjson.c"
+JSONIO_SRC = ROOT / "ccp" / "subproblem" / "jsonio.c"
+
 # platform-aware output binary
 if platform.system().lower() == "windows":
     C_BIN = ROOT / "ccp" / "subproblem.exe"
@@ -18,6 +22,10 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
     inc = os.getenv("CPLEX_INC")
     lib = os.getenv("CPLEX_LIB")
 
+    if not CJSON_SRC.exists():
+        print(f"[ERROR] missing {CJSON_SRC}. Put cJSON.c/.h in {CJSON_DIR}")
+        return False
+
     if sys == "windows":
         if not shutil.which("cl"):
             print("[ERROR] MSVC 'cl' not found. Open the x64 Native Tools Prompt.")
@@ -25,7 +33,7 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
         if not inc or not lib:
             print("[ERROR] Set CPLEX_INC and CPLEX_LIB.")
             return False
-        cmd = f'cl /nologo /O2 /MD /I"{inc}" "{C_SRC}" /Fe:"{C_OUT}" /link /LIBPATH:"{lib}" cplex*.lib'
+        cmd = f'cl /nologo /O2 /MD /std:c11 /I"{inc}" /I"{CJSON_DIR}" "{C_SRC}" "{CJSON_SRC}" "{JSONIO_SRC}" /Fe:"{C_OUT}" /link /LIBPATH:"{lib}" cplex*.lib'
 
     elif sys == "darwin":  # macOS
         if not shutil.which("clang"):
@@ -34,7 +42,7 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
         if not inc or not lib:
             print("[ERROR] Set CPLEX_INC and CPLEX_LIB in your Run Configuration.")
             return False
-        cmd = f'clang -O2 -I"{inc}" "{C_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
+        cmd = f'clang -O2 -std=c11 -I"{inc}" -I"{CJSON_DIR}" "{C_SRC}" "{CJSON_SRC}" "{JSONIO_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
 
     else:  # linux
         cc = shutil.which("gcc") or shutil.which("clang")
@@ -44,7 +52,13 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
         if not inc or not lib:
             print("[ERROR] Set CPLEX_INC and CPLEX_LIB.")
             return False
-        cmd = f'{cc} -O2 -I"{inc}" "{C_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
+        cmd = (
+            f'{cc} -O2 -std=c11 '
+            f'-I"{inc}" -I"{CJSON_DIR}" '
+            f'"{C_SRC}" "{CJSON_SRC}" "{JSONIO_SRC}"'
+            f'-L"{lib}" -lcplex -lm -lpthread '
+            f'-o "{C_OUT}"'
+        )
 
     print(f"[build] {cmd}")
     return subprocess.call(cmd, shell=True) == 0
