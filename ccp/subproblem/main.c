@@ -2,7 +2,9 @@
 
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
 #include "params.h"
+#include "feas.h"
 #include "/Applications/CPLEX_Studio2211/cplex/include/ilcplex/cplex.h"
 #include "third_party/cjson/cJSON.h"
 
@@ -14,6 +16,41 @@ static void die(CPXENVptr env, CPXLPptr lp, const char* msg) {
 }
 
 void parse_params_and_fleet(const char* merged_path, Params* P, Fleet* F, DemandPool* D);
+
+static int check_one_shuttle(const Params* P, const Shuttle* S, int idx){
+    CheckResult r1 = check_prev_vs_first(S->prev, S->seq[0]);
+    if (!r1.ok) {
+        printf("S%d infeasible: %s\n", idx, r1.msg);
+        return 0;
+    }
+
+    // 2. Checar tempo: delay + T*dur <= horizon
+    const int DUR = 30; // duração de cada tarefa (min)
+    CheckResult r2 = check_time_feas(P->horizon_min, S->delay, S->T, DUR);
+    if (!r2.ok) {
+        printf("S%d infeasible (time): %s\n", idx, r2.msg);
+        return 0;
+    }
+
+    // 3. Checar bateria
+    int soc_final = 0;
+    CheckResult r3 = check_battery_feas(
+        S->soc0, P->battery_range,
+        (const char* const*)S->seq, S->T,
+        /*consumo por OUT/RET*/ 28,
+        /*recarga por CRG*/ 35,
+        &soc_final
+    );
+    if (!r3.ok) {
+        printf("S%d infeasible (battery): %s (at pos %d)\n", idx, r3.msg, r3.viol_pos);
+        return 0;
+    }
+
+    // Se chegou aqui, shuttle é factível
+    printf("S%d factible | seq_len=%d delay=%d soc0=%d soc_final=%d\n",
+           idx, S->T, S->delay, S->soc0, soc_final);
+           return 1;
+}
 
 int main(int argc, char** argv){
     clock_t tic = clock();
@@ -37,105 +74,144 @@ int main(int argc, char** argv){
         printf("]\n");
     }
 
-    // cleanup
-    free_fleet(&F);
-    free_demand(&D);
+    int all_feas = 1;
+    for (int i=0; i<F.n; ++i){
+        int feas_i = check_one_shuttle(&P, &F.arr[i], i);
+        if (!feas_i) all_feas = 0;
+    }
+
+    if (!all_feas) {
+        clock_t toc = clock();
+        double elapsed = (double)(toc - tic) / CLOCKS_PER_SEC;
+        fprintf(stderr, "Infeasible. Elapsed CPU time: %.3f seconds\n", elapsed);
+        free_fleet(&F);
+        free_demand(&D);
+        return 0;
+    }
 
     int status = 0;
-
-    /* Abrir ambiente e problema */
     CPXENVptr env = CPXopenCPLEX(&status);
-    if (!env) die(env, NULL, "CPXopenCPLEX failed");
+    if (!env) { fprintf(stderr,"CPXopenCPLEX failed\n"); goto CLEANUP_FAIL; }
 
     CPXLPptr lp = CPXcreateprob(env, &status, "subproblem");
-    if (!lp) die(env, lp, "CPXcreateprob failed");
+    if (!lp) { fprintf(stderr,"CPXcreateprob failed\n"); goto CLEANUP_FAIL; }
 
-    /* Parâmetros do subproblema (janela local simplificada) */
-    int Q = 1;                /* nº de shuttles na janela */
-    int T = 5;                /* nº slots na janela */
-    int cap = 15;             /* capacidade por viagem */
-    int L = 30;               /* km consumidos por trip */
-    int demand = 3;
-    int Emax = 150;           /* autonomia total em km (energia disponível) */
-    (void)Q;                  /* evita warning se Q não for usado */
+    int I = F.n;
+    int R = D.n;
+    int N = I * R;
 
-    /* Variáveis binárias x_t: 1 se faz trip no slot t, 0 se idle */
-    double *obj = (double*) calloc(T, sizeof(double));
-    double *lb  = (double*) calloc(T, sizeof(double));
-    double *ub  = (double*) calloc(T, sizeof(double));
-    char   *ctype = (char*) calloc(T, sizeof(char));
-    if (!obj || !lb || !ub || !ctype) die(env, lp, "calloc failed");
+    double *obj = (double*) calloc(N, sizeof(double));
+    double *lb  = (double*) calloc(N, sizeof(double));
+    double *ub  = (double*) calloc(N, sizeof(double));
+    char   *ctype = (char*) calloc(N, sizeof(char));
+    if (!obj || !lb || !ub || !ctype) { fprintf(stderr,"calloc failed\n"); goto CLEANUP_FAIL; }
 
-    for (int t = 0; t < T; t++) {
-        int served = demand < cap ? (int)demand : cap; /* pax servidos se operar */
-        obj[t] = - (double)served;   /* max served -> min -served */
-        lb[t] = 0.0;
-        ub[t] = 1.0;
-        ctype[t] = 'B';
+    /* Objective: maximize served demand */
+    for (int i = 0; i < I; i++) {
+      for (int r = 0; r < R; r++) {
+        int k = i * R + r;
+        obj[k] = -1.0;
+        lb[k] = 0.0;
+        ub[k] = 1.0;
+        ctype[k] = 'B';
+      }
+    }
+    status = CPXnewcols(env, lp, N, obj, lb, ub, ctype, NULL);
+
+    /* Capacity per shuttle */
+    for (int i = 0; i < I; ++i){
+        /* Count trip slots in this shuttle’s sequence as a crude capacity proxy */
+        int trip_slots = 0;
+        for (int t = 0; t < F.arr[i].T; ++t){
+            const char* a = F.arr[i].seq[t];
+            if (strcmp(a, "OUT")==0 || strcmp(a,"RET")==0) trip_slots++;
+        }
+        int max_assign_i = trip_slots * P.cap;
+
+        int nzcnt = R;
+        int rmatbeg = 0;
+        int *rmatind = (int*) malloc(nzcnt * sizeof(int));
+        double *rmatval = (double*) malloc(nzcnt * sizeof(double));
+        if (!rmatind || !rmatval) { fprintf(stderr,"malloc failed\n"); goto CLEANUP_FAIL; }
+
+        for (int r = 0; r < R; ++r){
+            rmatind[r] = i*R + r;
+            rmatval[r] = 1.0;
+        }
+        double rhs = (double)max_assign_i;
+        char sense = 'L';
+        status = CPXaddrows(env, lp, 0, 1, nzcnt, &rhs, &sense, &rmatbeg, rmatind, rmatval, NULL, NULL);
+        free(rmatind); free(rmatval);
+        if (status) { fprintf(stderr,"CPXaddrows(capacity) failed\n"); goto CLEANUP_FAIL; }
     }
 
-    /* adiciona colunas (variáveis) */
-    status = CPXnewcols(env, lp, T, obj, lb, ub, ctype, NULL);
-    if (status) die(env, lp, "CPXnewcols failed");
+    /* Each request served at most once */
+    for (int r = 0; r < R; ++r){
+        int nzcnt = I;
+        int rmatbeg = 0;
+        int *rmatind = (int*) malloc(nzcnt * sizeof(int));
+        double *rmatval = (double*) malloc(nzcnt * sizeof(double));
+        if (!rmatind || !rmatval) { fprintf(stderr,"malloc failed\n"); goto CLEANUP_FAIL; }
 
-    /* Restrição de energia: L * sum_t x_t <= Emax */
-    int nzcnt = T;
-    int rmatbeg = 0;
-    int *rmatind = (int*) malloc(nzcnt * sizeof(int));
-    double *rmatval = (double*) malloc(nzcnt * sizeof(double));
-    if (!rmatind || !rmatval) die(env, lp, "malloc failed");
-
-    for (int t = 0; t < T; t++) {
-        rmatind[t] = t;       /* índice da coluna x_t */
-        rmatval[t] = (double)L;
+        for (int i = 0; i < I; ++i){
+            rmatind[i] = i*R + r;
+            rmatval[i] = 1.0;
+        }
+        double rhs = 1.0;
+        char sense = 'L';
+        status = CPXaddrows(env, lp, 0, 1, nzcnt, &rhs, &sense, &rmatbeg, rmatind, rmatval, NULL, NULL);
+        free(rmatind); free(rmatval);
+        if (status) { fprintf(stderr,"CPXaddrows(req≤1) failed\n"); goto CLEANUP_FAIL; }
     }
 
-    double rhs = (double)Emax;
-    char sense = 'L';
-    status = CPXaddrows(env, lp,
-                        0,        /* 0 novas colunas */
-                        1,        /* 1 nova linha   */
-                        nzcnt,    /* nº de coeficientes não-nulos */
-                        &rhs, &sense, &rmatbeg, rmatind, rmatval,
-                        NULL, NULL);
-    if (status) die(env, lp, "CPXaddrows (energy) failed");
-
-    /* Otimiza como MIP, pois x_t são binárias */
     status = CPXmipopt(env, lp);
-    if (status) die(env, lp, "CPXmipopt failed");
+    if (status) { fprintf(stderr,"CPXmipopt failed\n"); goto CLEANUP_FAIL; }
 
-    /* Recupera objetivo e solução */
     double objval = 0.0;
     status = CPXgetobjval(env, lp, &objval);
-    if (status) die(env, lp, "CPXgetobjval failed");
+    if (status) { fprintf(stderr,"CPXgetobjval failed\n"); goto CLEANUP_FAIL; }
 
-    double *x = (double*) calloc(T, sizeof(double));
-    if (!x) die(env, lp, "calloc x failed");
-    status = CPXgetmipx(env, lp, x, 0, T - 1);
-    if (status) die(env, lp, "CPXgetmipx failed");
+    double *y = (double*) calloc(N, sizeof(double));
+    if (!y) { fprintf(stderr,"calloc y failed\n"); goto CLEANUP_FAIL; }
+    status = CPXgetmipx(env, lp, y, 0, N-1);
+    if (status) { fprintf(stderr,"CPXgetmipx failed\n"); goto CLEANUP_FAIL; }
 
-    clock_t toc = clock();
-    double elapsed = (double)(toc - tic) / CLOCKS_PER_SEC;
-    printf("Elapsed CPU time: %.3f s\n", elapsed);
-
-    /* Imprime resultado */
-    printf("Obj = %.3f (negativo == max pax)\n", objval);
-    int trips = 0, energy_used = 0, pax = 0;
-    for (int t = 0; t < T; t++) {
-        int decide = (x[t] > 0.5) ? 1 : 0;
-        trips += decide;
-        energy_used += decide * L;
-        pax += decide * (demand < cap ? (int)demand : cap);
-        printf("t=%d  x_t=%d\n", t, decide);
+    /* Report timing (feasible branch) */
+    {
+        clock_t toc = clock();
+        double elapsed = (double)(toc - tic) / CLOCKS_PER_SEC;
+        printf("Feasible. Assignment solved. Elapsed CPU time: %.3f s\n", elapsed);
     }
-    printf("trips=%d  energy_used=%d  pax_served=%d\n", trips, energy_used, pax);
+/* Simple print of chosen pairs */
+    {
+        int served = 0;
+        for (int i=0;i<I;++i){
+            for (int r=0;r<R;++r){
+                int k = i*R + r;
+                if (y[k] > 0.5) {
+                    printf("Assign: shuttle %d -> request %d (y=1)\n", i, r);
+                    served++;
+                }
+            }
+        }
+        printf("Total served requests = %d; objective (max served) = %.0f\n", served, -objval);
+    }
 
-    /* limpeza */
+    /* cleanup on success */
+    free(y);
     free(obj); free(lb); free(ub); free(ctype);
-    free(rmatind); free(rmatval);
-    free(x);
-
     CPXfreeprob(env, &lp);
     CPXcloseCPLEX(&env);
+
+    free_fleet(&F);
+    free_demand(&D);
     return 0;
+
+CLEANUP_FAIL:
+    free(obj); free(lb); free(ub); free(ctype);
+    if (lp) CPXfreeprob(env, &lp);
+    if (env) CPXcloseCPLEX(&env);
+    free_fleet(&F);
+    free_demand(&D);
+    return 1;
 }

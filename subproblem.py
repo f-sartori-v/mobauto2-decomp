@@ -37,7 +37,8 @@ def write_fake_input(out_path: Path, nbr_shuttles: int = 2):
         seq = random.choice(candidates)
         soc0 = random.choice([30, 60, 90, 120, 150, 150])
         delay_window = 0 if random.choice([0, 0, 1]) == 0 else random.randint(0, 30)
-        previous_task = random.choice(["OUT", "RET", "CRG"])
+        #previous_task = random.choice(["OUT", "RET", "CRG"])
+        previous_task = "RET"
 
         sub_obj["shuttles"][f"S{i}"] = {
             "seq": seq,

@@ -17,3 +17,8 @@ htmlcov/
 *.tmp
 
 outputs/
+
+ccp/merged.json
+ccp/subproblem.out
+ccp/subproblem/third_party/
+ccp/report/

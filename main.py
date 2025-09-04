@@ -10,6 +10,7 @@ C_SRC = ROOT / "ccp" / "subproblem" / "main.c"
 CJSON_DIR = ROOT / "ccp" / "subproblem" / "third_party" / "cjson"
 CJSON_SRC = CJSON_DIR / "cjson.c"
 JSONIO_SRC = ROOT / "ccp" / "subproblem" / "jsonio.c"
+FEAS_SRC = ROOT / "ccp" / "subproblem"/ "feas.c"
 
 # platform-aware output binary
 if platform.system().lower() == "windows":
@@ -42,7 +43,8 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
         if not inc or not lib:
             print("[ERROR] Set CPLEX_INC and CPLEX_LIB in your Run Configuration.")
             return False
-        cmd = f'clang -O2 -std=c11 -I"{inc}" -I"{CJSON_DIR}" "{C_SRC}" "{CJSON_SRC}" "{JSONIO_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"'
+        cmd = (f'clang -O2 -std=c11 -I"{inc}" -I"{CJSON_DIR}" "{C_SRC}" "{CJSON_SRC}" "{JSONIO_SRC}" '
+               f'"{FEAS_SRC}" -L"{lib}" -lcplex -lm -lpthread -o "{C_OUT}"')
 
     else:  # linux
         cc = shutil.which("gcc") or shutil.which("clang")
@@ -95,7 +97,6 @@ def run_binary_with_config(bin_path: Path, cfg_path: Path, demand_path: Path, ba
     argv = [str(bin_path), str(merged_path)]
     print(f"[run] {' '.join(argv)}")
 
-    t0 = time.perf_counter()
     t0 = time.perf_counter()
     try:
         rc = subprocess.run(argv, check=False).returncode
