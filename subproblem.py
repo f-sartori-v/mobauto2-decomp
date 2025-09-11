@@ -30,6 +30,21 @@ candidates = [
     ["CRG", "OUT", "RET", "CRG", "OUT"]
 ]
 
+def minutes(hh_mm: str) -> int:
+    h, m = map(int, hh_mm.split(":"))
+    return 60*h + m
+
+def solve_windows(
+        scheme: list,
+        slots: int,
+        base_start="07:00",
+):
+    duration = 30
+    slots = len(scheme)
+    t = minutes(base_start)
+    end_time = t + duration * slots
+
+
 def write_fake_input(out_path: Path, nbr_shuttles: int = 2):
     sub_obj: Dict[str, Any] = {"nbr_shuttles": nbr_shuttles, "shuttles": {}}
 

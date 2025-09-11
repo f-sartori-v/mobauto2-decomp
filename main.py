@@ -8,7 +8,7 @@ CONFIG = ROOT / "configs" / "base.yaml"
 C_SRC = ROOT / "ccp" / "subproblem" / "main.c"
 
 CJSON_DIR = ROOT / "ccp" / "subproblem" / "third_party" / "cjson"
-CJSON_SRC = CJSON_DIR / "cjson.c"
+CJSON_SRC = CJSON_DIR / "cJSON.c"
 JSONIO_SRC = ROOT / "ccp" / "subproblem" / "jsonio.c"
 FEAS_SRC = ROOT / "ccp" / "subproblem"/ "feas.c"
 
