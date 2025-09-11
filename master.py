@@ -76,14 +76,7 @@ def check_prev_vs_first(prev: str, first: str) -> bool:
     return True
 
 
-def check_time_feas(horizon_min: int, delay: int, T: int, trip_duration: int) -> bool:
-    if trip_duration <= 0:
-        return False
-    delay = max(0, int(delay))
-    return delay + T * trip_duration <= horizon_min
-
-
-def check_battery_feas(soc0: int, Emax: int, seq: List[str], cons_trip: int = 28, rec_charge: int = 35) -> Tuple[bool, int]:
+def check_battery_feas(Emax: int, seq: List[str], soc0: int = 150, cons_trip: int = 28, rec_charge: int = 30) -> Tuple[bool, int]:
     soc = int(soc0)
     for tok in seq:
         if tok in ("OUT", "RET"):
@@ -104,8 +97,6 @@ def choose_feasible_sequences(cfg: Cfg, seed: int | None = None) -> Dict[str, Di
     for i in range(cfg.fleet.nbr_shuttles):
         # Strategy: sample until feasible under simple checks
         prev = "RET"  # matches generator in subproblem.py
-        delay = rng.choice([0, 0, 0, rng.randint(0, 20)])
-        soc0 = rng.choice([60, 90, 120, 150])
 
         # try up to N attempts
         seq: List[str] | None = None
@@ -115,9 +106,8 @@ def choose_feasible_sequences(cfg: Cfg, seed: int | None = None) -> Dict[str, Di
                 continue
             if not check_prev_vs_first(prev, cand[0]):
                 continue
-            if not check_time_feas(cfg.time.horizon_min, delay, len(cand), cfg.operation.trip_duration):
-                continue
-            feas, _ = check_battery_feas(soc0, cfg.fleet.battery_range, cand, cons_trip=cfg.operation.trip_distance)
+
+            feas, _ = check_battery_feas(cfg.fleet.battery_range, cand, cons_trip=cfg.operation.trip_distance)
             if not feas:
                 continue
             seq = cand
@@ -128,9 +118,7 @@ def choose_feasible_sequences(cfg: Cfg, seed: int | None = None) -> Dict[str, Di
 
         sub_obj["shuttles"][f"S{i}"] = {
             "seq": seq,
-            "soc0": soc0,
             "prev_task": prev,
-            "delay": delay,
         }
 
     return sub_obj

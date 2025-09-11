@@ -1,7 +1,7 @@
 # em src/main.py
 from pathlib import Path
-from subproblem import write_fake_input, write_demand_files
-import platform, shutil, subprocess, os, yaml, json, time, argparse, random
+from subproblem import write_demand_files
+import platform, shutil, subprocess, os, yaml, json, time, argparse, random, math
 
 ROOT = Path(__file__).resolve().parents[0]
 CONFIG = ROOT / "configs" / "base.yaml"
@@ -176,10 +176,11 @@ def master_flow():
     if not ensure_master_built():
         return False
 
-    # 1) Prepare demand aggregation input for master
-    demand_base = ROOT / "outputs" / "demand_base.json"
-    demand = 2 ** random.randint(0, 10)
-    demand_path = write_demand_files(demand, demand_base)
+    # 1) Prepare demand aggregation input for master (require pre-generated demand)
+    demand_path = ROOT / "outputs" / "demand_base.json"
+    if not demand_path.exists():
+        print("[master] missing outputs/demand_base.json. Run with --mode demand first.")
+        return False
 
     # 2) Build merged_master.json for the C master
     base = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
@@ -188,7 +189,7 @@ def master_flow():
     # Aggregate demand by 30-min slots (or configured slot duration)
     slot_dur = int(base["operation"]["trip_duration"])  # minutes per slot
     horizon = int(base["time"]["horizon_min"])          # total minutes
-    T = max(1, horizon // slot_dur)
+    T = max(1, math.ceil(horizon / slot_dur))
     r_out = [0 for _ in range(T)]
     r_ret = [0 for _ in range(T)]
     for req in dem.get("requests", []):
@@ -226,31 +227,46 @@ def master_flow():
     print(f"[master] generated subproblem input at {sub_in_path}")
     return True
 
-def fake_master_flow():
+def subproblem_flow():
+    # Build subproblem only; require master/demand inputs to exist
     if not ensure_built():
         return False
 
     in_path = ROOT / "outputs" / "subproblem.json"
-    write_fake_input(in_path)
+    if not in_path.exists():
+        print("[subproblem] missing outputs/subproblem.json. Run --mode master first.")
+        return False
 
+    demand_path = ROOT / "outputs" / "demand_base.json"
+    if not demand_path.exists():
+        print("[subproblem] missing outputs/demand_base.json. Run with --mode demand first.")
+        return False
+
+    # Call subproblem with existing demand and master-produced input
+    return run_binary_with_config(C_BIN, in_path, demand_path, CONFIG)
+
+
+def demand_only_flow():
+    # Generate random demand and write to outputs/demand_base.json
+    (ROOT / "outputs").mkdir(exist_ok=True)
     demand_base = ROOT / "outputs" / "demand_base.json"
     demand = 2 ** random.randint(0, 10)
-    demand_path = write_demand_files(demand, demand_base)
-
-    # Call subproblem with fake input
-    return run_binary_with_config(C_BIN, in_path, demand_path, CONFIG)
+    write_demand_files(demand, demand_base)
+    print(f"[demand] wrote {demand_base}")
+    return True
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MOB-AUTO2 Decomposition Runner")
     parser.add_argument(
         "--mode",
-        choices=["master", "subproblem", "build"],
+        choices=["master", "subproblem", "build", "demand"],
         default="master",
         help=(
             "build: compile C master and subproblem; "
             "master: run C master only (produces outputs/subproblem.json); "
-            "subproblem: run subproblem with fake master input"
+            "subproblem: run subproblem with existing outputs/demand_base.json; "
+            "demand: generate random outputs/demand_base.json"
         ),
     )
     args = parser.parse_args()
@@ -265,7 +281,11 @@ if __name__ == "__main__":
         if not ok:
             exit(1)
     elif args.mode == "subproblem":
-        ok = fake_master_flow()
+        ok = subproblem_flow()
+        if not ok:
+            exit(1)
+    elif args.mode == "demand":
+        ok = demand_only_flow()
         if not ok:
             exit(1)
     else:

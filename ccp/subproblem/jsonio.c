@@ -46,6 +46,14 @@ static const char* req_str(cJSON* parent, const char* key){
     if(!cJSON_IsString(x)) die(key);
     return x->valuestring;
 }
+static int opt_int(cJSON* parent, const char* key, int defv){
+    cJSON* x=cJSON_GetObjectItemCaseSensitive(parent,key);
+    return cJSON_IsNumber(x) ? (int)x->valuedouble : defv;
+}
+static const char* opt_str(cJSON* parent, const char* key, const char* defv){
+    cJSON* x=cJSON_GetObjectItemCaseSensitive(parent,key);
+    return cJSON_IsString(x) ? x->valuestring : defv;
+}
 
 /* ---------- public: parse merged.json ---------- */
 void parse_params_and_fleet(const char* merged_path, Params* P, Fleet* F, DemandPool* D){
@@ -90,9 +98,9 @@ void parse_params_and_fleet(const char* merged_path, Params* P, Fleet* F, Demand
             F->arr[i].seq[t]=(char*)malloc(strlen(s)+1);
             strcpy(F->arr[i].seq[t], s);
         }
-        F->arr[i].soc0  = req_int(Si,"soc0");
-        F->arr[i].delay = req_int(Si,"delay");
-        const char* prev = req_str(Si,"prev_task");
+        F->arr[i].soc0  = opt_int(Si, "soc0", P->battery_range);
+        F->arr[i].delay = opt_int(Si, "delay", 0);
+        const char* prev = opt_str(Si, "prev_task", "NUL");
         strncpy(F->arr[i].prev, prev, sizeof(F->arr[i].prev)-1);
         F->arr[i].prev[sizeof(F->arr[i].prev)-1] = '\0';
     }

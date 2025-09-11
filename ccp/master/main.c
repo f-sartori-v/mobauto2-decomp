@@ -118,12 +118,15 @@ int main(int argc, char** argv){
     int trip_distance = req_int(op, "trip_distance");
 
     /* Read aggregated demand per slot if provided */
-    int T = horizon_min / trip_duration;
+    int T = (trip_duration>0) ? ( (horizon_min + trip_duration - 1) / trip_duration ) : 1; /* ceil */
+    int slot_minutes = trip_duration;
     cJSON* dagg = opt_obj(root, "demand_agg");
     int* R_out = NULL; int* R_ret = NULL;
     if (dagg){
         cJSON* arr_out = opt_arr(dagg, "r_out");
         cJSON* arr_ret = opt_arr(dagg, "r_ret");
+        cJSON* smin = cJSON_GetObjectItemCaseSensitive(dagg, "slot_minutes");
+        if (cJSON_IsNumber(smin)) slot_minutes = (int)smin->valuedouble;
         if (arr_out && arr_ret){
             int n = cJSON_GetArraySize(arr_out);
             if (n > 0){
@@ -139,6 +142,11 @@ int main(int argc, char** argv){
             }
         }
     }
+    if (!R_out || !R_ret){
+        /* Fallback: zero demand */
+        R_out = (int*)calloc(T, sizeof(int));
+        R_ret = (int*)calloc(T, sizeof(int));
+    }
 
     /* Build subproblem JSON */
     cJSON* out_root = cJSON_CreateObject();
@@ -149,6 +157,12 @@ int main(int argc, char** argv){
     const int L = trip_distance; // consumption per OUT/RET
     const int Emax = battery_range;
     const int dchg = Emax / 5;   // per-slot charge increment
+
+    /* --- Print a concise summary of inputs for CP master scaffolding --- */
+    long sum_out = 0, sum_ret = 0;
+    for(int i=0;i<T;i++){ sum_out += R_out[i]; sum_ret += R_ret[i]; }
+    printf("[master] slots=%d slot_minutes=%d shuttles=%d Emax=%d L=%d dchg=%d demand(out,ret)=(%ld,%ld)\n",
+           T, slot_minutes, nbr_shuttles, Emax, L, dchg, sum_out, sum_ret);
 
     for(int i=0;i<nbr_shuttles;i++){
         const char* prev = "NONE"; // no initial prev; first non-idle must be OUT
@@ -164,8 +178,7 @@ int main(int argc, char** argv){
         // Generate full-horizon plan following rules; prefer OUT as first non-idle and RET as last non-idle
         // We use demand aggregates if available to bias choices (not yet used in this scaffold)
         int slot_minutes = trip_duration;
-        int TT = (slot_minutes>0)? (horizon_min/slot_minutes): 1;
-        if (TT<=0) TT=1;
+        int TT = T;
         const char* last_non_idle = prev;
         int placed_first_out = 0;
         int placed_final_ret = 0;
@@ -220,9 +233,6 @@ int main(int argc, char** argv){
 
             cJSON_AddItemToArray(arr, cJSON_CreateString(a));
         }
-        cJSON_AddNumberToObject(Sj, "soc0", soc0);
-        cJSON_AddStringToObject(Sj, "prev_task", prev);
-        cJSON_AddNumberToObject(Sj, "delay", delay);
     }
 
     /* write output */
