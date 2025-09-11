@@ -19,6 +19,8 @@ htmlcov/
 outputs/
 
 ccp/merged.json
+ccp/merged_master.json
 ccp/subproblem.out
+ccp/master.out
 ccp/subproblem/third_party/
 report/
