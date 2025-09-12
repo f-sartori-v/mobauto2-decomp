@@ -6,12 +6,13 @@ import platform, shutil, subprocess, os, yaml, json, time, argparse, random, mat
 ROOT = Path(__file__).resolve().parents[0]
 CONFIG = ROOT / "configs" / "base.yaml"
 C_SRC = ROOT / "ccp" / "subproblem" / "main.c"
-M_SRC = ROOT / "ccp" / "master" / "main.c"
+M_CP_SRC = ROOT / "ccp" / "master" / "main.cpp"
 
 CJSON_DIR = ROOT / "ccp" / "subproblem" / "third_party" / "cjson"
 CJSON_SRC = CJSON_DIR / "cJSON.c"
 JSONIO_SRC = ROOT / "ccp" / "subproblem" / "jsonio.c"
 FEAS_SRC = ROOT / "ccp" / "subproblem"/ "feas.c"
+
 
 # platform-aware output binary
 if platform.system().lower() == "windows":
@@ -19,9 +20,9 @@ if platform.system().lower() == "windows":
 else:
     C_BIN = ROOT / "ccp" / "subproblem.out"
 if platform.system().lower() == "windows":
-    M_BIN = ROOT / "ccp" / "master.exe"
+    M_CP_BIN = ROOT / "ccp" / "master.exe"
 else:
-    M_BIN = ROOT / "ccp" / "master.out"
+    M_CP_BIN = ROOT / "ccp" / "master.out"
 
 def build_subproblem(C_SRC: Path, C_OUT: Path):
     sys = platform.system().lower()
@@ -68,57 +69,35 @@ def build_subproblem(C_SRC: Path, C_OUT: Path):
         )
 
     print(f"[build] {cmd}")
-    return subprocess.call(cmd, shell=True) == 0
+    ok = subprocess.call(cmd, shell=True) == 0
 
-def build_master(M_SRC: Path, M_OUT: Path):
+
+    return ok
+
+def build_master(M_CP_SRC: Path, M_OUT: Path):
     sys = platform.system().lower()
-    inc = os.getenv("CPLEX_INC")
-    lib = os.getenv("CPLEX_LIB")
-
-    if not CJSON_SRC.exists():
-        print(f"[ERROR] missing {CJSON_SRC}. Put cJSON.c/.h in {CJSON_DIR}")
+    if sys != "darwin":
+        print("[ERROR] CP master build currently configured for macOS only.")
         return False
-
-    if sys == "windows":
-        if not shutil.which("cl"):
-            print("[ERROR] MSVC 'cl' not found. Open the x64 Native Tools Prompt.")
-            return False
-        if not inc or not lib:
-            print("[ERROR] Set CPLEX_INC and CPLEX_LIB.")
-            return False
-        cmd = (
-            f'cl /nologo /O2 /MD /std:c11 '
-            f'/I"{inc}" /I"{CJSON_DIR}" /I"{(ROOT/"ccp"/"subproblem")}" '
-            f'"{M_SRC}" "{CJSON_SRC}" "{FEAS_SRC}" '
-            f'/Fe:"{M_OUT}" /link /LIBPATH:"{lib}" cplex*.lib'
-        )
-    elif sys == "darwin":
-        if not shutil.which("clang"):
-            print("[ERROR] clang not found on macOS.")
-            return False
-        if not inc or not lib:
-            print("[ERROR] Set CPLEX_INC and CPLEX_LIB in your Run Configuration.")
-            return False
-        cmd = (
-            f'clang -O2 -std=c11 '
-            f'-I"{inc}" -I"{CJSON_DIR}" -I"{(ROOT/"ccp"/"subproblem")}" '
-            f'"{M_SRC}" "{CJSON_SRC}" "{FEAS_SRC}" '
-            f'-L"{lib}" -lcplex -lm -lpthread -o "{M_OUT}"'
-        )
-    else:
-        cc = shutil.which("gcc") or shutil.which("clang")
-        if not cc:
-            print("[ERROR] gcc/clang not found on Linux.")
-            return False
-        if not inc or not lib:
-            print("[ERROR] Set CPLEX_INC and CPLEX_LIB.")
-            return False
-        cmd = (
-            f'{cc} -O2 -std=c11 '
-            f'-I"{inc}" -I"{CJSON_DIR}" -I"{(ROOT/"ccp"/"subproblem")}" '
-            f'"{M_SRC}" "{CJSON_SRC}" "{FEAS_SRC}" '
-            f'-L"{lib}" -lcplex -lm -lpthread -o "{M_OUT}"'
-        )
+    if not shutil.which("clang++"):
+        print("[ERROR] clang++ not found on macOS.")
+        return False
+    if not M_CP_SRC.exists():
+        print(f"[ERROR] missing {M_CP_SRC}")
+        return False
+    studio = os.getenv("CPLEX_STUDIO", "/Applications/CPLEX_Studio2211")
+    cmd = (
+        f'clang++ -O2 -std=c++17 '
+        f'-I"{studio}/concert/include" '
+        f'-I"{studio}/cplex/include" '
+        f'-I"{studio}/cpoptimizer/include" '
+        f'"{M_CP_SRC}" '
+        f'-L"{studio}/concert/lib/x86-64_osx/static_pic" '
+        f'-L"{studio}/cplex/lib/x86-64_osx/static_pic" '
+        f'-L"{studio}/cpoptimizer/lib/x86-64_osx/static_pic" '
+        f'-lconcert -lilocplex -lcplex -lcp -lpthread -lm '
+        f'-o "{M_OUT}"'
+    )
     print(f"[build] {cmd}")
     return subprocess.call(cmd, shell=True) == 0
 
@@ -131,8 +110,8 @@ def ensure_built() -> bool:
     return True
 
 def ensure_master_built() -> bool:
-    if not M_BIN.exists():
-        ok = build_master(M_SRC, M_BIN)
+    if not M_CP_BIN.exists():
+        ok = build_master(M_CP_SRC, M_CP_BIN)
         if not ok:
             print("[FAIL] master build failed")
             return False
@@ -202,7 +181,7 @@ def master_flow():
     # 3) Run C master to produce outputs/subproblem.json
     sub_in_path = ROOT / "outputs" / "subproblem.json"
     # Pass aggregated demand file explicitly as optional 3rd arg for the master
-    argv = [str(M_BIN), str(merged_master_path), str(sub_in_path), str(demand_agg_path)]
+    argv = [str(M_CP_BIN), str(merged_master_path), str(sub_in_path), str(demand_agg_path)]
     print(f"[run] {' '.join(argv)}")
     rc = subprocess.run(argv, check=False).returncode
     if rc != 0:
@@ -247,8 +226,8 @@ if __name__ == "__main__":
         choices=["master", "subproblem", "build", "demand"],
         default="master",
         help=(
-            "build: compile C master and subproblem; "
-            "master: run C master only (produces outputs/subproblem.json); "
+            "build: compile C++ CP master only; "
+            "master: run C++ master only (produces outputs/subproblem.json); "
             "subproblem: run subproblem with existing outputs/demand_base.json; "
             "demand: generate random outputs/demand_base.json"
         ),
@@ -256,9 +235,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.mode == "build":
-        ok1 = build_subproblem(C_SRC, C_BIN)
-        ok2 = build_master(M_SRC, M_BIN)
-        if not (ok1 and ok2):
+        ok = build_master(M_CP_SRC, M_CP_BIN)
+        if not ok:
             exit(1)
     elif args.mode == "master":
         ok = master_flow()
