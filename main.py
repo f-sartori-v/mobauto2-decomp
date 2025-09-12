@@ -186,31 +186,14 @@ def master_flow():
     base = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     dem = json.loads(demand_path.read_text(encoding="utf-8"))
 
-    # Aggregate demand by 30-min slots (or configured slot duration)
-    slot_dur = int(base["operation"]["trip_duration"])  # minutes per slot
-    horizon = int(base["time"]["horizon_min"])          # total minutes
-    T = max(1, math.ceil(horizon / slot_dur))
-    r_out = [0 for _ in range(T)]
-    r_ret = [0 for _ in range(T)]
-    for req in dem.get("requests", []):
-        tmin = int(req.get("ready", req.get("time", 0)))
-        dirn = req.get("dir", "OUT")
-        idx = tmin // slot_dur
-        if idx < 0:
-            idx = 0
-        if idx >= T:
-            idx = T - 1
-        if dirn == "RET":
-            r_ret[idx] += 1
-        else:
-            r_out[idx] += 1
+    # Aggregate demand outside the C master (cached file)
+    from master import aggregate_demand  # local import to avoid cycles
+    demand_agg = aggregate_demand(demand_path, CONFIG)
 
-    demand_agg = {
-        "slots": T,
-        "slot_minutes": slot_dur,
-        "r_out": r_out,
-        "r_ret": r_ret,
-    }
+    # Write aggregated demand to outputs for reuse across iterations
+    (ROOT / "outputs").mkdir(exist_ok=True)
+    demand_agg_path = ROOT / "outputs" / "demand_agg.json"
+    demand_agg_path.write_text(json.dumps(demand_agg, indent=2), encoding="utf-8")
 
     merged_master = {"base": base, "demand": dem, "demand_agg": demand_agg}
     merged_master_path = ROOT / "ccp" / "merged_master.json"
@@ -218,7 +201,8 @@ def master_flow():
 
     # 3) Run C master to produce outputs/subproblem.json
     sub_in_path = ROOT / "outputs" / "subproblem.json"
-    argv = [str(M_BIN), str(merged_master_path), str(sub_in_path)]
+    # Pass aggregated demand file explicitly as optional 3rd arg for the master
+    argv = [str(M_BIN), str(merged_master_path), str(sub_in_path), str(demand_agg_path)]
     print(f"[run] {' '.join(argv)}")
     rc = subprocess.run(argv, check=False).returncode
     if rc != 0:

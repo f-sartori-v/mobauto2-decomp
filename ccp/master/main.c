@@ -97,7 +97,7 @@ static void generate_full_horizon_sequence(
 
 int main(int argc, char** argv){
     if (argc < 3){
-        fprintf(stderr, "usage: master <merged_master.json> <out_subproblem.json>\n");
+        fprintf(stderr, "usage: master <merged_master.json> <out_subproblem.json> [demand_agg.json]\n");
         return 2;
     }
     srand((unsigned int)time(NULL));
@@ -114,14 +114,33 @@ int main(int argc, char** argv){
     int horizon_min   = req_int(timeb, "horizon_min");
     int nbr_shuttles  = req_int(fleet, "nbr_shuttles");
     int battery_range = req_int(fleet, "battery_range");
+    int seat_capacity = req_int(fleet, "shuttle_capacity");
     int trip_duration = req_int(op, "trip_duration");
     int trip_distance = req_int(op, "trip_distance");
 
     /* Read aggregated demand per slot if provided */
     int T = (trip_duration>0) ? ( (horizon_min + trip_duration - 1) / trip_duration ) : 1; /* ceil */
     int slot_minutes = trip_duration;
-    cJSON* dagg = opt_obj(root, "demand_agg");
+    cJSON* dagg = NULL;
     int* R_out = NULL; int* R_ret = NULL;
+
+    /* Prefer external file if provided as argv[3] */
+    if (argc >= 4 && argv[3] && strlen(argv[3]) > 0){
+        char* dagg_text = slurp(argv[3]);
+        if (!dagg_text){ fprintf(stderr, "[master] warn: failed to read %s, falling back to embedded demand_agg\n", argv[3]); }
+        else {
+            dagg = cJSON_Parse(dagg_text);
+            free(dagg_text);
+            if (!dagg || !cJSON_IsObject(dagg)){
+                fprintf(stderr, "[master] warn: invalid JSON in %s, falling back to embedded demand_agg\n", argv[3]);
+                if (dagg){ cJSON_Delete(dagg); dagg = NULL; }
+            }
+        }
+    }
+    if (!dagg){
+        dagg = opt_obj(root, "demand_agg");
+    }
+
     if (dagg){
         cJSON* arr_out = opt_arr(dagg, "r_out");
         cJSON* arr_ret = opt_arr(dagg, "r_ret");
@@ -161,79 +180,106 @@ int main(int argc, char** argv){
     /* --- Print a concise summary of inputs for CP master scaffolding --- */
     long sum_out = 0, sum_ret = 0;
     for(int i=0;i<T;i++){ sum_out += R_out[i]; sum_ret += R_ret[i]; }
-    printf("[master] slots=%d slot_minutes=%d shuttles=%d Emax=%d L=%d dchg=%d demand(out,ret)=(%ld,%ld)\n",
-           T, slot_minutes, nbr_shuttles, Emax, L, dchg, sum_out, sum_ret);
+    printf("[master] slots=%d slot_minutes=%d shuttles=%d seats=%d Emax=%d L=%d dchg=%d demand(out,ret)=(%ld,%ld)\n",
+           T, slot_minutes, nbr_shuttles, seat_capacity, Emax, L, dchg, sum_out, sum_ret);
 
+    /* Greedy per-slot assignment to maximize expected served demand */
+    int* rem_out = (int*)calloc(T, sizeof(int));
+    int* rem_ret = (int*)calloc(T, sizeof(int));
+    for(int t=0;t<T;t++){ rem_out[t] = R_out[t]; rem_ret[t] = R_ret[t]; }
+
+    /* Initialize per-shuttle state and JSON arrays */
+    char** last_non_idle = (char**)calloc(nbr_shuttles, sizeof(char*));
+    int* soc = (int*)calloc(nbr_shuttles, sizeof(int));
+    cJSON** seq_arr = (cJSON**)calloc(nbr_shuttles, sizeof(cJSON*));
+    int* placed_first_out = (int*)calloc(nbr_shuttles, sizeof(int));
+    int* placed_final_ret = (int*)calloc(nbr_shuttles, sizeof(int));
     for(int i=0;i<nbr_shuttles;i++){
-        const char* prev = "NONE"; // no initial prev; first non-idle must be OUT
-        int soc0 = Emax; // start full unless specified otherwise
-        int delay = 0;   // idle handled via NUL
-
+        last_non_idle[i] = "NONE";
+        soc[i] = Emax;
         char key[16]; snprintf(key,sizeof(key),"S%d", i);
         cJSON* Sj = cJSON_CreateObject();
         cJSON_AddItemToObject(shmap, key, Sj);
-        cJSON* arr = cJSON_CreateArray();
-        cJSON_AddItemToObject(Sj, "seq", arr);
-        int soc_work = soc0;
-        // Generate full-horizon plan following rules; prefer OUT as first non-idle and RET as last non-idle
-        // We use demand aggregates if available to bias choices (not yet used in this scaffold)
-        int slot_minutes = trip_duration;
-        int TT = T;
-        const char* last_non_idle = prev;
-        int placed_first_out = 0;
-        int placed_final_ret = 0;
-        for(int t=0;t<TT;t++){
-            int slots_left = TT - t;
+        seq_arr[i] = cJSON_CreateArray();
+        cJSON_AddItemToObject(Sj, "seq", seq_arr[i]);
+    }
+
+    long served_out_total = 0, served_ret_total = 0;
+    for(int t=0;t<T;t++){
+        for(int i=0;i<nbr_shuttles;i++){
             const char* a = "NUL";
+            int can_out = (soc[i] - L >= 0) && (strcmp(last_non_idle[i], "OUT") != 0);
+            int must_ret = (strcmp(last_non_idle[i], "OUT") == 0);
+            int can_ret = (soc[i] - L >= 0) && must_ret;
+            int can_crg = (strcmp(last_non_idle[i], "OUT") != 0);
+            int slots_left = T - t;
 
-            // Tail planning: ensure last non-idle is RET if possible
-            if (!placed_final_ret && slots_left == 1){
-                if (strcmp(last_non_idle, "OUT")==0 && soc_work - L >= 0){
-                    a = "RET"; placed_final_ret = 1;
+            if (placed_final_ret[i]){
+                a = "NUL"; // remain idle after final RET
+            } else if (slots_left == 1){
+                // Ensure last non-idle is RET if possible
+                if (must_ret && can_ret){ a = "RET"; placed_final_ret[i] = 1; }
+                else { a = "NUL"; }
+            } else if (slots_left == 2){
+                if (must_ret){
+                    if (can_ret){ a = "RET"; placed_final_ret[i] = 1; }
+                    else { a = "NUL"; }
                 } else {
-                    a = "NUL";
+                    // Aim for OUT now to allow RET in the last slot
+                    if (!placed_first_out[i]){
+                        if (can_out){ a = "OUT"; placed_first_out[i] = 1; }
+                        else if (can_crg && soc[i] < Emax){ a = "CRG"; }
+                        else { a = "NUL"; }
+                    } else if (can_out){
+                        a = "OUT";
+                    } else if (can_crg && soc[i] < Emax){
+                        a = "CRG";
+                    } else { a = "NUL"; }
                 }
-            } else if (!placed_final_ret && slots_left == 2) {
-                if (strcmp(last_non_idle, "OUT")==0){
-                    // OUT -> RET
-                    if (soc_work - L >= 0){ a = "RET"; placed_final_ret = 1; }
-                    else a = "NUL";
-                } else {
-                    // aim for OUT now to allow RET next
-                    if (soc_work - L >= 0) a = "OUT"; else a = "CRG";
-                }
+            } else if (must_ret){
+                // Must close an OUT with RET before doing anything else
+                if (can_ret){ a = "RET"; }
+                else { a = "NUL"; }
+            } else if (!placed_first_out[i]){
+                // Enforce first non-idle is OUT (may idle or charge until feasible)
+                if (can_out){ a = "OUT"; placed_first_out[i] = 1; }
+                else if (can_crg && soc[i] < Emax){ a = "CRG"; }
+                else { a = "NUL"; }
             } else {
-                // Mid-horizon logic
-                if (!placed_first_out){
-                    if (soc_work - L >= 0) { a = "OUT"; placed_first_out = 1; }
-                    else { a = "CRG"; }
-                } else {
-                    // choose respecting transitions
-                    if (strcmp(last_non_idle, "OUT")==0){
-                        if (soc_work - L >= 0) a = "RET"; else a = "NUL";
-                    } else if (strcmp(last_non_idle, "RET")==0){
-                        if (soc_work - L >= 0) a = (rand()%2? "OUT":"CRG"); else a = "CRG";
-                    } else if (strcmp(last_non_idle, "CRG")==0){
-                        if (soc_work - L >= 0) a = (rand()%2? "OUT":"CRG"); else a = "CRG";
-                    } else { // NONE
-                        if (soc_work - L >= 0) a = "OUT"; else a = "CRG";
-                    }
+                // Greedy: serve OUT demand if any, else charge if needed, else idle
+                int gain_out = can_out ? (rem_out[t] > 0 ? (rem_out[t] < seat_capacity ? rem_out[t] : seat_capacity) : 0) : 0;
+                if (gain_out > 0){ a = "OUT"; }
+                else if (can_crg && soc[i] < Emax){ a = "CRG"; }
+                else { a = "NUL"; }
+            }
+
+            if (strcmp(a, "OUT")==0){
+                soc[i] -= L; if (soc[i] < 0){ a = "NUL"; soc[i] += L; }
+                else {
+                    int served = seat_capacity; if (served > rem_out[t]) served = rem_out[t];
+                    rem_out[t] -= served; served_out_total += served; last_non_idle[i] = "OUT";
                 }
             }
-
-            // Apply SoC update and keep last_non_idle state
-            if (strcmp(a, "OUT")==0 || strcmp(a, "RET")==0){
-                if (soc_work - L < 0){ a = "NUL"; }
-                else { soc_work -= L; last_non_idle = a; }
-            } else if (strcmp(a, "CRG")==0){
-                soc_work += dchg; if (soc_work > Emax) soc_work = Emax; last_non_idle = a;
+            if (strcmp(a, "RET")==0){
+                soc[i] -= L; if (soc[i] < 0){ a = "NUL"; soc[i] += L; }
+                else {
+                    int served = seat_capacity; if (served > rem_ret[t]) served = rem_ret[t];
+                    rem_ret[t] -= served; served_ret_total += served; last_non_idle[i] = "RET";
+                    // If we placed RET with 1 slot left or marked earlier, commit final-ret status
+                    if (slots_left <= 2) placed_final_ret[i] = 1;
+                }
             }
-            // If we just placed RET and want it to be the final non-idle, mark and force remaining to NUL
-            if (strcmp(a, "RET")==0 && (slots_left <= 2)) placed_final_ret = 1;
+            if (strcmp(a, "CRG")==0){ soc[i] += dchg; if (soc[i] > Emax) soc[i] = Emax; last_non_idle[i] = "CRG"; }
 
-            cJSON_AddItemToArray(arr, cJSON_CreateString(a));
+            cJSON_AddItemToArray(seq_arr[i], cJSON_CreateString(a));
         }
     }
+
+    printf("[master] served_out_total=%ld served_ret_total=%ld\n", served_out_total, served_ret_total);
+
+    free(rem_out); free(rem_ret);
+    free(last_non_idle); free(soc); free(seq_arr);
+    free(placed_first_out); free(placed_final_ret);
 
     /* write output */
     char* out_text = cJSON_PrintBuffered(out_root, 2, 0);
@@ -244,8 +290,33 @@ int main(int argc, char** argv){
     fwrite(out_text, 1, strlen(out_text), fo);
     fclose(fo);
 
+    /* Print sequences to stdout for convenience */
+    printf("[master] sequences (per shuttle):\n");
+    cJSON* out_shmap = cJSON_GetObjectItem(out_root, "shuttles");
+    for(int i=0;i<nbr_shuttles;i++){
+        char key[16]; snprintf(key,sizeof(key),"S%d", i);
+        cJSON* Sj = cJSON_GetObjectItem(out_shmap, key);
+        cJSON* arr = Sj ? cJSON_GetObjectItem(Sj, "seq") : NULL;
+        printf("  %s: [", key);
+        if (cJSON_IsArray(arr)){
+            int n = cJSON_GetArraySize(arr);
+            for(int k=0;k<n;k++){
+                cJSON* it = cJSON_GetArrayItem(arr, k);
+                const char* s = cJSON_IsString(it) ? it->valuestring : "?";
+                printf("%s%s", s, (k==n-1?"":","));
+            }
+        }
+        printf("]\n");
+    }
+
     free(out_text);
     cJSON_Delete(out_root);
+    /* If dagg was parsed from external file, it is separate from root */
+    if (dagg && dagg != opt_obj(root, "demand_agg")){
+        /* Only delete if it wasn't borrowed from root */
+        /* In borrowed case, it will be deleted with root */
+        cJSON_Delete(dagg);
+    }
     cJSON_Delete(root);
     free(text);
 

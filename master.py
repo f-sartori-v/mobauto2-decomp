@@ -4,11 +4,11 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import yaml
 
-from subproblem import candidates, write_demand_files
+from subproblem import write_demand_files
 import platform, subprocess, time
 
 # Local paths (avoid importing from main to prevent cycles)
@@ -194,3 +194,45 @@ def run_binary_with_config(bin_path: Path, cfg_path: Path, demand_path: Path, ba
         return False
     print(f"[time] subproblem ran in {time.perf_counter() - t0:.3f}s, exit={rc}")
     return rc == 0
+
+
+# --- Demand aggregation (exported) ---
+def aggregate_demand(
+    demand_path: Path,
+    base_yaml_path: Path = CONFIG,
+    slot_minutes: Optional[int] = None,
+) -> Dict[str, object]:
+    """Aggregate base demand into time slots.
+
+    - Reads config for horizon and default slot duration unless slot_minutes is provided.
+    - Returns a dict with keys: slots, slot_minutes, r_out, r_ret.
+    """
+    base = yaml.safe_load(Path(base_yaml_path).read_text(encoding="utf-8"))
+    horizon = int(base["time"]["horizon_min"])
+    if slot_minutes is None:
+        slot_minutes = int(base["operation"]["trip_duration"])  # default slot size
+
+    data = json.loads(Path(demand_path).read_text(encoding="utf-8"))
+    T = max(1, (horizon + slot_minutes - 1) // slot_minutes)
+    r_out = [0 for _ in range(T)]
+    r_ret = [0 for _ in range(T)]
+
+    for req in data.get("requests", []):
+        tmin = int(req.get("ready", req.get("time", 0)))
+        dirn = req.get("dir", "OUT")
+        idx = tmin // slot_minutes
+        if idx < 0:
+            idx = 0
+        if idx >= T:
+            idx = T - 1
+        if dirn == "RET":
+            r_ret[idx] += 1
+        else:
+            r_out[idx] += 1
+
+    return {
+        "slots": T,
+        "slot_minutes": int(slot_minutes),
+        "r_out": r_out,
+        "r_ret": r_ret,
+    }
