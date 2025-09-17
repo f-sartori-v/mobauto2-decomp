@@ -3,8 +3,8 @@ project_name: MOB-AUTO2 Shuttle Scheduling Decomposition Problem
 
 # Time configuration
 time:
-  horizon_min: 150
-  step_res: 1
+  horizon_min: 630
+  step_res: 30
 
 # Fleet and shuttle specs
 fleet:
@@ -25,6 +25,6 @@ operation:
 
 # Solver configuration (CPO)
 solver:
-  time_limit: 5
+  time_limit: 3
   log_verbosity: 'Quiet'        # values: quiet, terse, normal, verbose
   search_type: 'Auto'      # values = ('DepthFirst', 'Restart', 'MultiPoint', 'IterativeDiving', 'Neighborhood', 'Auto')

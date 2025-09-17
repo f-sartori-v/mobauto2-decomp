@@ -24,5 +24,6 @@ ccp/subproblem.out
 ccp/master.out
 ccp/subproblem/third_party/
 report/
+notebook/
 
 AGENTS.md

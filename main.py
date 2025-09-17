@@ -91,11 +91,12 @@ def build_master(M_CP_SRC: Path, M_OUT: Path):
         f'-I"{studio}/concert/include" '
         f'-I"{studio}/cplex/include" '
         f'-I"{studio}/cpoptimizer/include" '
-        f'"{M_CP_SRC}" '
+        f'-I"{CJSON_DIR}" '
+        f'"{M_CP_SRC}" "{CJSON_SRC}" '
         f'-L"{studio}/concert/lib/x86-64_osx/static_pic" '
         f'-L"{studio}/cplex/lib/x86-64_osx/static_pic" '
         f'-L"{studio}/cpoptimizer/lib/x86-64_osx/static_pic" '
-        f'-lconcert -lilocplex -lcplex -lcp -lpthread -lm '
+        f'-lconcert -lilocplex -lcplex -lcp -lyaml-cpp -lpthread -lm '
         f'-o "{M_OUT}"'
     )
     print(f"[build] {cmd}")
@@ -178,10 +179,10 @@ def master_flow():
     merged_master_path = ROOT / "ccp" / "merged_master.json"
     merged_master_path.write_text(json.dumps(merged_master, indent=2), encoding="utf-8")
 
-    # 3) Run C master to produce outputs/subproblem.json
+    # 3) Run C++ master to produce outputs/subproblem.json
     sub_in_path = ROOT / "outputs" / "subproblem.json"
-    # Pass aggregated demand file explicitly as optional 3rd arg for the master
-    argv = [str(M_CP_BIN), str(merged_master_path), str(sub_in_path), str(demand_agg_path)]
+    # Pass config and aggregated demand file to the C++ master
+    argv = [str(M_CP_BIN), str(CONFIG), str(demand_agg_path), str(sub_in_path)]
     print(f"[run] {' '.join(argv)}")
     rc = subprocess.run(argv, check=False).returncode
     if rc != 0:
