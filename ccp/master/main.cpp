@@ -7,6 +7,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
+#include <cstdio>   // snprintf
+#include <cstdlib>  // free
 
 extern "C" {
 #include "../subproblem/third_party/cjson/cJSON.h"
@@ -14,6 +17,10 @@ extern "C" {
 
 static std::string slurp(const std::string& path){
     std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.good()) {
+        std::cerr << "[cp-master] error: cannot open file: " << path << "\n";
+        return std::string();
+    }
     std::ostringstream ss; ss << ifs.rdbuf();
     return ss.str();
 }
@@ -29,11 +36,31 @@ int main(int argc, char** argv) {
     const std::string out_path   = argv[3];
 
     // Read YAML config
-    YAML::Node base  = YAML::LoadFile(cfg_path);
-    YAML::Node time  = base["time"];
-    YAML::Node fleet = base["fleet"];
-    YAML::Node op    = base["operation"];
-    YAML::Node solver= base["solver"];
+    YAML::Node base;
+    try {
+        base = YAML::LoadFile(cfg_path);
+    } catch (const std::exception& e) {
+        std::cerr << "[cp-master] error: failed to load YAML config '" << cfg_path << "': " << e.what() << "\n";
+        return 2;
+    }
+    YAML::Node time   = base["time"];
+    YAML::Node fleet  = base["fleet"];
+    YAML::Node op     = base["operation"];
+    YAML::Node solver = base["solver"];
+
+    if (!time || !fleet || !op || !solver){
+        std::cerr << "[cp-master] error: config must contain nodes: time, fleet, operation, solver\n";
+        return 2;
+    }
+
+    if (!time["horizon_min"])   { std::cerr << "[cp-master] error: missing time.horizon_min in config\n";   return 2; }
+    if (!op["trip_duration"])   { std::cerr << "[cp-master] error: missing operation.trip_duration in config\n"; return 2; }
+    if (!op["trip_distance"])   { std::cerr << "[cp-master] error: missing operation.trip_distance in config\n"; return 2; }
+    if (!fleet["nbr_shuttles"]) { std::cerr << "[cp-master] error: missing fleet.nbr_shuttles in config\n";  return 2; }
+    if (!fleet["shuttle_capacity"]) { std::cerr << "[cp-master] error: missing fleet.shuttle_capacity in config\n"; return 2; }
+    if (!fleet["battery_range"]) { std::cerr << "[cp-master] error: missing fleet.battery_range in config\n"; return 2; }
+    if (!solver["time_limit"])  { std::cerr << "[cp-master] error: missing solver.time_limit in config\n";   return 2; }
+    if (!solver["search_type"]) { std::cerr << "[cp-master] error: missing solver.search_type in config\n";   return 2; }
 
     const int horizon_min   = time["horizon_min"].as<int>();
     const int trip_duration = op["trip_duration"].as<int>();
@@ -41,11 +68,15 @@ int main(int argc, char** argv) {
     const int nbr_shuttles  = fleet["nbr_shuttles"].as<int>();
     const int seat_capacity = fleet["shuttle_capacity"].as<int>();
     const int battery_range = fleet["battery_range"].as<int>();
-    const int time_limit = solver["time_limit"].as<int>();
+    const int time_limit    = solver["time_limit"].as<int>();
     const std::string search_type = solver["search_type"].as<std::string>();
 
     // --- demand_agg.json ---
     std::string dagg_txt = slurp(demand_path);
+    if (dagg_txt.empty()) {
+        std::cerr << "[cp-master] error: empty or unreadable demand file: " << demand_path << "\n";
+        return 3;
+    }
     cJSON* dagg = cJSON_Parse(dagg_txt.c_str());
     if (!dagg){ std::cerr << "invalid demand_agg.json\n"; return 3; }
 
@@ -146,7 +177,7 @@ int main(int argc, char** argv) {
           model.add(s[q][t + 1] == s[q][t] + xOUT[q][t] - xRET[q][t]);
           model.add(xOUT[q][t] <= 1 - s[q][t]); // OUT only at L
           model.add(xRET[q][t] <= s[q][t]);     // RET only at M
-          model.add(xCHR[q][t] <= 1 - s[q][t]); // CHR only at L
+          model.add(xCHR[q][t] <= 1 - s[q][t]); // CRG only at L
 
           // idle-at-L: 1 iff at L and no task chosen
           idlL[q][t] = IloBoolVar(env);
@@ -155,7 +186,7 @@ int main(int argc, char** argv) {
           model.add(idlL[q][t] <= 1 - (xOUT[q][t] + xRET[q][t] + xCHR[q][t]));
           model.add(idlL[q][t] >= 1 - s[q][t] - (xOUT[q][t] + xRET[q][t] + xCHR[q][t]));
 
-          // CHR-before-IDL ordering at L: after an idle-at-L in this block, no more CHR before next OUT
+          // CRG-before-IDL ordering at L: after an idle-at-L in this block, no more CRG before next OUT
           model.add(xCHR[q][t] + zL[q][t] <= 1);
 
           // advance zL to next slot (reset on RET, persist otherwise, trigger on idle-at-L)
@@ -180,7 +211,7 @@ int main(int argc, char** argv) {
           g[q][t] = IloIntVar(env, 0, DeltaChg);
           g[q][t].setName(("gchg_" + std::to_string(q) + "_" + std::to_string(t)).c_str());
           model.add(b[q][t + 1] == b[q][t] - Lleg * (xOUT[q][t] + xRET[q][t]) + g[q][t]);
-          model.add(g[q][t] <= DeltaChg * xCHR[q][t]);  // charge only if CHR
+          model.add(g[q][t] <= DeltaChg * xCHR[q][t]);  // charge only if CRG
           model.add(g[q][t] <= Emax - b[q][t]);         // cap at Emax
           model.add(b[q][t] >= Lleg * (xOUT[q][t] + xRET[q][t])); // enough to start a leg
         }
@@ -212,6 +243,18 @@ int main(int argc, char** argv) {
 
       // --- Solve ---
       cp.setParameter(IloCP::TimeLimit, time_limit);
+      // Map search_type from config to CP Optimizer parameter, if recognized
+      if (search_type == "auto") {
+          // default; do nothing
+      } else if (search_type == "depth_first") {
+          cp.setParameter(IloCP::SearchType, IloCP::DepthFirst);
+      } else if (search_type == "restart") {
+          cp.setParameter(IloCP::SearchType, IloCP::Restart);
+      } else if (search_type == "multi_point") {
+          cp.setParameter(IloCP::SearchType, IloCP::MultiPoint);
+      } else {
+          std::cerr << "[cp-master] warn: unknown search_type '" << search_type << "' (using default)\n";
+      }
       // cp.setParameter(IloCP::LogVerbosity, IloCP::Verbose);
       cp.extract(model);
       bool ok = cp.solve();
@@ -238,15 +281,19 @@ int main(int argc, char** argv) {
             const char *lab = "NUL";
             if (cp.getValue(xOUT[q][t]) > 0.5) lab = "OUT";
             else if (cp.getValue(xRET[q][t]) > 0.5) lab = "RET";
-            else if (cp.getValue(xCHR[q][t]) > 0.5) lab = "CHR";
+            else if (cp.getValue(xCHR[q][t]) > 0.5) lab = "CRG";
             cJSON_AddItemToArray(arr, cJSON_CreateString(lab));
           }
           cJSON_AddItemToObject(Sj, "seq", arr);
         }
         // Write file
         std::ofstream ofs(out_path, std::ios::binary);
+        if (!ofs.good()) {
+            std::cerr << "[cp-master] error: cannot open output file: " << out_path << "\n";
+        }
         char *text = cJSON_PrintBuffered(sub, 2, 0);
-        if (text) { ofs << text; free(text); }
+        if (text && ofs.good()) { ofs << text; }
+        if (text) { free(text); }
         cJSON_Delete(sub);
       }
 

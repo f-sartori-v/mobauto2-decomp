@@ -51,13 +51,29 @@ int main(int argc, char** argv){
     // --------------------------
     cJSON* jsub = cJSON_Parse(slurp(sub_path).c_str());
     if (!jsub) die("invalid subproblem.json");
-    const cJSON* jQ = cJSON_GetObjectItemCaseSensitive(jsub, "nbr_shuttles");
-    const cJSON* jT = cJSON_GetObjectItemCaseSensitive(jsub, "num_slots");
+    const cJSON* jQ  = cJSON_GetObjectItemCaseSensitive(jsub, "nbr_shuttles");
+    const cJSON* jT  = cJSON_GetObjectItemCaseSensitive(jsub, "num_slots");
     const cJSON* jSh = cJSON_GetObjectItemCaseSensitive(jsub, "shuttles");
-    if (!cJSON_IsNumber(jQ) || !cJSON_IsNumber(jT) || !cJSON_IsObject(jSh)) die("subproblem.json missing fields");
+    if (!cJSON_IsObject(jSh)) die("subproblem.json missing 'shuttles' object");
 
-    const int Q = (int) jQ->valuedouble;
-    const int T = (int) jT->valuedouble;
+    int Q = cJSON_IsNumber(jQ) ? (int) jQ->valuedouble : 0;
+    int T = cJSON_IsNumber(jT) ? (int) jT->valuedouble : -1;
+    if (Q <= 0) {
+        // Count shuttles from object keys (assumes S0..S{Q-1})
+        int cnt = 0;
+        for (const cJSON* it = jSh->child; it; it = it->next) {
+            if (cJSON_IsObject(it)) cnt++;
+        }
+        Q = std::max(1, cnt);
+    }
+    if (T < 0) {
+        // Infer T from the first shuttle's seq length
+        const cJSON* first = jSh->child;
+        if (!first) die("subproblem.json has empty 'shuttles'");
+        const cJSON* arr = cJSON_GetObjectItemCaseSensitive(first, "seq");
+        if (!cJSON_IsArray(arr)) die("subproblem.json: shuttle.seq must be array");
+        T = cJSON_GetArraySize(arr);
+    }
 
     // optional parameters (with defaults)
     int slot_minutes  = 30;
@@ -84,7 +100,9 @@ int main(int argc, char** argv){
         const cJSON* Sj = cJSON_GetObjectItemCaseSensitive(jSh, key);
         if (!Sj){ die("missing shuttle key in subproblem.json"); }
         const cJSON* arr = cJSON_GetObjectItemCaseSensitive(Sj, "seq");
-        if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) != T) die("bad seq array size");
+        if (!cJSON_IsArray(arr)) die("bad or missing seq array");
+        const int n = cJSON_GetArraySize(arr);
+        if (n != T) die("seq length mismatch with num_slots");
         for (int t=0; t<T; ++t){
             const cJSON* s = cJSON_GetArrayItem(arr, t);
             if (!cJSON_IsString(s)) die("non-string seq entry");
@@ -241,6 +259,9 @@ int main(int argc, char** argv){
         // Each request served at most once (in its direction)
         // Also waiting-time linearization and release-time consistency
         const double A = 50.0; // penalty for unserved
+        // Maximum allowed waiting time (minutes)
+        const int WAIT_MAX = 30;
+
         // OUT requests
         for (int i=0;i<R_OUT;++i){
             IloExpr served(env);
@@ -249,6 +270,8 @@ int main(int argc, char** argv){
                     served += z_out_by_trip[k][i];
                     // time feasibility + waiting linking
                     model.add( tau[k] >= req_time_OUT[i] - Mtime*(1.0 - z_out_by_trip[k][i]) );
+                    // enforce max wait: tau <= ready + WAIT_MAX when assigned
+                    model.add( tau[k] <= req_time_OUT[i] + WAIT_MAX + Mtime*(1.0 - z_out_by_trip[k][i]) );
                     model.add( w_out[i] >= tau[k] - req_time_OUT[i] - Mtime*(1.0 - z_out_by_trip[k][i]) );
                 }
             }
@@ -262,6 +285,8 @@ int main(int argc, char** argv){
                 if (trips[k].dir==1){
                     served += z_ret_by_trip[k][i];
                     model.add( tau[k] >= req_time_RET[i] - Mtime*(1.0 - z_ret_by_trip[k][i]) );
+                    // enforce max wait for RET as well
+                    model.add( tau[k] <= req_time_RET[i] + WAIT_MAX + Mtime*(1.0 - z_ret_by_trip[k][i]) );
                     model.add( w_ret[i] >= tau[k] - req_time_RET[i] - Mtime*(1.0 - z_ret_by_trip[k][i]) );
                 }
             }

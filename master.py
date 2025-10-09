@@ -171,20 +171,9 @@ __all__ = [
 
 # --- Local copy of runner to avoid circular imports ---
 def run_binary_with_config(bin_path: Path, cfg_path: Path, demand_path: Path, base_yaml_path: Path = CONFIG) -> bool:
-    base = yaml.safe_load(Path(base_yaml_path).read_text(encoding="utf-8"))
-    subp = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-    dem = json.loads(Path(demand_path).read_text(encoding="utf-8"))
-
-    merged = {
-        "base": base,
-        "subproblem": subp,
-        "demand": dem,
-    }
-
-    merged_path = bin_path.parent / "merged.json"
-    merged_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-
-    argv = [str(bin_path), str(merged_path)]
+    """Run C++ subproblem: <subproblem.json> <requests.json> <out.json>."""
+    out_path = Path(__file__).resolve().parents[0] / "outputs" / "subproblem_result.json"
+    argv = [str(bin_path), str(cfg_path), str(demand_path), str(out_path)]
     print(f"[run] {' '.join(argv)}")
     t0 = time.perf_counter()
     try:
@@ -193,6 +182,8 @@ def run_binary_with_config(bin_path: Path, cfg_path: Path, demand_path: Path, ba
         print(f"[time] subproblem TIMEOUT after {time.perf_counter() - t0:.3f}s")
         return False
     print(f"[time] subproblem ran in {time.perf_counter() - t0:.3f}s, exit={rc}")
+    if rc == 0:
+        print(f"[subproblem] wrote {out_path}")
     return rc == 0
 
 

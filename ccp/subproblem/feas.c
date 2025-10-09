@@ -7,7 +7,7 @@ TaskTok tok_from_str(const char* s){
     if (!s) return TK_NUL;
     if (strcmp(s,"OUT")==0) return TK_OUT;
     if (strcmp(s,"RET")==0) return TK_RET;
-    if (strcmp(s,"CRG")==0 || strcmp(s,"CHR")==0) return TK_CRG;
+    if (strcmp(s,"CRG")==0) return TK_CRG;
     if (strcmp(s,"NUL")==0) return TK_NUL;
     return TK_NUL;
 }
