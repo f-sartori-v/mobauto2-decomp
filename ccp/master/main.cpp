@@ -68,8 +68,9 @@ int main(int argc, char** argv) {
     const int nbr_shuttles  = fleet["nbr_shuttles"].as<int>();
     const int seat_capacity = fleet["shuttle_capacity"].as<int>();
     const int battery_range = fleet["battery_range"].as<int>();
-    const int time_limit    = solver["time_limit"].as<int>();
+      const int time_limit    = solver["time_limit"].as<int>();
     const std::string search_type = solver["search_type"].as<std::string>();
+    const double trip_cost = solver["trip_cost"] ? solver["trip_cost"].as<double>() : 1e-3; // small penalty per trip
 
     // --- demand_agg.json ---
     std::string dagg_txt = slurp(demand_path);
@@ -119,7 +120,8 @@ int main(int argc, char** argv) {
       IloModel model(env);
       IloCP cp(env);
 
-      const int T = num_slots;
+      const int T = num_slots;       // demand slots
+      const int Tact = T + 1;        // action slots (one extra to serve last-slot demand)
       const int Q = nbr_shuttles;
       const int S = seat_capacity;
 
@@ -139,30 +141,30 @@ int main(int argc, char** argv) {
       }
 
       // --- Decision vars ---
-      std::vector<std::vector<IloBoolVar>> xOUT(Q, std::vector<IloBoolVar>(T));
-      std::vector<std::vector<IloBoolVar>> xRET(Q, std::vector<IloBoolVar>(T));
-      std::vector<std::vector<IloBoolVar>> xCHR(Q, std::vector<IloBoolVar>(T));
+      std::vector<std::vector<IloBoolVar>> xOUT(Q, std::vector<IloBoolVar>(Tact));
+      std::vector<std::vector<IloBoolVar>> xRET(Q, std::vector<IloBoolVar>(Tact));
+      std::vector<std::vector<IloBoolVar>> xCHR(Q, std::vector<IloBoolVar>(Tact));
 
-      std::vector<std::vector<IloIntVar>>  s(Q,   std::vector<IloIntVar>(T + 1)); // 0..T
-      std::vector<std::vector<IloBoolVar>> idlL(Q, std::vector<IloBoolVar>(T));   // 0..T-1
-      std::vector<std::vector<IloBoolVar>> zL(Q,   std::vector<IloBoolVar>(T + 1)); // 0..T
+      std::vector<std::vector<IloIntVar>>  s(Q,   std::vector<IloIntVar>(Tact + 1)); // 0..Tact
+      std::vector<std::vector<IloBoolVar>> idlL(Q, std::vector<IloBoolVar>(Tact));   // 0..Tact-1
+      std::vector<std::vector<IloBoolVar>> zL(Q,   std::vector<IloBoolVar>(Tact + 1)); // 0..Tact
 
       for (int q = 0; q < Q; ++q) {
-        // location state 0..T
-        for (int t = 0; t <= T; ++t) {
+        // location state 0..Tact
+        for (int t = 0; t <= Tact; ++t) {
           s[q][t] = IloIntVar(env, 0, 1);
           s[q][t].setName(("s_" + std::to_string(q) + "_" + std::to_string(t)).c_str());
         }
         model.add(s[q][0] == 0);
-        model.add(s[q][T] == 0);
+        model.add(s[q][Tact] == 0);
 
         // zL init
         zL[q][0] = IloBoolVar(env);
         zL[q][0].setName(("zL_" + std::to_string(q) + "_0").c_str());
         model.add(zL[q][0] == 0);
 
-        // decisions and helpers 0..T-1
-        for (int t = 0; t < T; ++t) {
+        // decisions and helpers 0..Tact-1
+        for (int t = 0; t < Tact; ++t) {
           xOUT[q][t] = IloBoolVar(env);
           xOUT[q][t].setName(("xOUT_" + std::to_string(q) + "_" + std::to_string(t)).c_str());
           xRET[q][t] = IloBoolVar(env);
@@ -196,50 +198,67 @@ int main(int argc, char** argv) {
           model.add(zL[q][t + 1] >= zL[q][t] - xRET[q][t]);
           model.add(zL[q][t + 1] >= idlL[q][t]);
         }
+        // Earliest service starts at t=1: enforce idle at t=0 (no OUT/RET/CRG)
+        model.add(idlL[q][0] == 1);
+        model.add(xOUT[q][0] == 0);
+        model.add(xRET[q][0] == 0);
       }
 
       // --- Battery state (linear, capped) ---
-      std::vector<std::vector<IloIntVar>> b(Q, std::vector<IloIntVar>(T + 1));
-      std::vector<std::vector<IloIntVar>> g(Q, std::vector<IloIntVar>(T));
+      std::vector<std::vector<IloIntVar>> b(Q, std::vector<IloIntVar>(Tact + 1));
+      std::vector<std::vector<IloIntVar>> g(Q, std::vector<IloIntVar>(Tact));
       for (int q = 0; q < Q; ++q) {
-        for (int t = 0; t <= T; ++t) {
+        for (int t = 0; t <= Tact; ++t) {
           b[q][t] = IloIntVar(env, 0, Emax);
           b[q][t].setName(("b_" + std::to_string(q) + "_" + std::to_string(t)).c_str());
         }
         model.add(b[q][0] == Emax);
-        for (int t = 0; t < T; ++t) {
+        for (int t = 0; t < Tact; ++t) {
           g[q][t] = IloIntVar(env, 0, DeltaChg);
           g[q][t].setName(("gchg_" + std::to_string(q) + "_" + std::to_string(t)).c_str());
           model.add(b[q][t + 1] == b[q][t] - Lleg * (xOUT[q][t] + xRET[q][t]) + g[q][t]);
           model.add(g[q][t] <= DeltaChg * xCHR[q][t]);  // charge only if CRG
           model.add(g[q][t] <= Emax - b[q][t]);         // cap at Emax
+          model.add(g[q][t] >= xCHR[q][t]);             // if CRG chosen, must add at least 1 unit (no CRG at full)
           model.add(b[q][t] >= Lleg * (xOUT[q][t] + xRET[q][t])); // enough to start a leg
         }
       }
 
       // --- Served demand and objective ---
+      // Enforce a one-slot lag with an extra action slot to serve last demand
       std::vector<IloIntVar> rOut(T), rRet(T);
       for (int t = 0; t < T; ++t) {
         rOut[t] = IloIntVar(env, 0, RhatOut[t]);
         rOut[t].setName(("rOut_" + std::to_string(t)).c_str());
         rRet[t] = IloIntVar(env, 0, RhatRet[t]);
         rRet[t].setName(("rRet_" + std::to_string(t)).c_str());
-
+        model.add(rOut[t] <= RhatOut[t]);
+        model.add(rRet[t] <= RhatRet[t]);
+      }
+      // Now link capacity at action slot t≥1 to demand at slot t-1
+      for (int t = 0; t < Tact; ++t) {
         IloExpr capOut(env), capRet(env);
         for (int q = 0; q < Q; ++q) {
           capOut += S * xOUT[q][t];
           capRet += S * xRET[q][t];
         }
-        model.add(rOut[t] <= capOut); capOut.end();
-        model.add(rRet[t] <= capRet); capRet.end();
-
-        model.add(rOut[t] <= RhatOut[t]);
-        model.add(rRet[t] <= RhatRet[t]);
+        if (t > 0 && (t - 1) < T) {
+          model.add(rOut[t - 1] <= capOut);
+          model.add(rRet[t - 1] <= capRet);
+        }
+        capOut.end();
+        capRet.end();
       }
       IloExpr totalServed(env);
       for (int t = 0; t < T; ++t) totalServed += rOut[t] + rRet[t];
-      model.add(IloMaximize(env, totalServed));
+      // Small per-trip penalty to avoid unnecessary trips
+      IloExpr tripCount(env);
+      for (int t = 0; t < Tact; ++t) {
+        for (int q = 0; q < Q; ++q) tripCount += xOUT[q][t] + xRET[q][t];
+      }
+      model.add(IloMaximize(env, totalServed - trip_cost * tripCount));
       totalServed.end();
+      tripCount.end();
 
       // --- Solve ---
       cp.setParameter(IloCP::TimeLimit, time_limit);
@@ -269,7 +288,7 @@ int main(int argc, char** argv) {
         // Generate subproblem.json (sequence per shuttle/slot)
         cJSON *sub = cJSON_CreateObject();
         cJSON_AddNumberToObject(sub, "nbr_shuttles", Q);
-        cJSON_AddNumberToObject(sub, "num_slots", T);
+        cJSON_AddNumberToObject(sub, "num_slots", Tact);
         cJSON *shmap = cJSON_CreateObject();
         cJSON_AddItemToObject(sub, "shuttles", shmap);
         for (int q = 0; q < Q; ++q) {
@@ -277,7 +296,7 @@ int main(int argc, char** argv) {
           cJSON *Sj = cJSON_CreateObject();
           cJSON_AddItemToObject(shmap, key, Sj);
           cJSON *arr = cJSON_CreateArray();
-          for (int t = 0; t < T; ++t) {
+          for (int t = 0; t < Tact; ++t) {
             const char *lab = "NUL";
             if (cp.getValue(xOUT[q][t]) > 0.5) lab = "OUT";
             else if (cp.getValue(xRET[q][t]) > 0.5) lab = "RET";

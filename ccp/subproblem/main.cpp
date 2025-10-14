@@ -77,7 +77,7 @@ int main(int argc, char** argv){
 
     // optional parameters (with defaults)
     int slot_minutes  = 30;
-    int delta_minutes = 15;
+    int delta_minutes = 30;   // allow ±30 min around slot
     int trip_duration = 30;   // D
     int seat_capacity = 15;
     int theta0_min    = 0;    // horizon origin
