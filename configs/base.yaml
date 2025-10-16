@@ -25,6 +25,7 @@ operation:
 
 # Solver configuration (CPO)
 solver:
-  time_limit: 5
+  time_limit: 5                 # seconds for main problem CP
+  subproblem_time_limit: 3600    # seconds for subproblem MILP
   log_verbosity: 'Quiet'        # values: quiet, terse, normal, verbose
   search_type: 'Auto'      # values = ('DepthFirst', 'Restart', 'MultiPoint', 'IterativeDiving', 'Neighborhood', 'Auto')

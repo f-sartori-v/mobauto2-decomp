@@ -68,8 +68,9 @@ int main(int argc, char** argv) {
     const int nbr_shuttles  = fleet["nbr_shuttles"].as<int>();
     const int seat_capacity = fleet["shuttle_capacity"].as<int>();
     const int battery_range = fleet["battery_range"].as<int>();
-      const int time_limit    = solver["time_limit"].as<int>();
+    const int time_limit    = solver["time_limit"].as<int>();
     const std::string search_type = solver["search_type"].as<std::string>();
+    const int sp_time_limit = solver["subproblem_time_limit"] ? solver["subproblem_time_limit"].as<int>() : 300;
     const double trip_cost = solver["trip_cost"] ? solver["trip_cost"].as<double>() : 1e-3; // small penalty per trip
 
     // --- demand_agg.json ---
@@ -289,6 +290,7 @@ int main(int argc, char** argv) {
         cJSON *sub = cJSON_CreateObject();
         cJSON_AddNumberToObject(sub, "nbr_shuttles", Q);
         cJSON_AddNumberToObject(sub, "num_slots", Tact);
+        cJSON_AddNumberToObject(sub, "sp_time_limit", sp_time_limit);
         cJSON *shmap = cJSON_CreateObject();
         cJSON_AddItemToObject(sub, "shuttles", shmap);
         for (int q = 0; q < Q; ++q) {

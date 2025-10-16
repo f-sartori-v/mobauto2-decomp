@@ -1,38 +1,44 @@
-import json, random, yaml
+from __future__ import annotations
+import json, random
 from pathlib import Path
 
 
-def minutes(hh_mm: str) -> int:
-    h, m = map(int, hh_mm.split(":"))
-    return 60*h + m
+def generate_scenarios_from_agg(demand_agg_path: Path, out_dir: Path, num_scenarios: int = 5, seed: int | None = None) -> list[Path]:
+    """Generate random request scenarios that exactly match aggregated slot counts.
 
-def solve_windows(
-        scheme: list,
-        slots: int,
-        base_start="07:00",
-):
-    duration = 30
-    slots = len(scheme)
-    t = minutes(base_start)
-    end_time = t + duration * slots
+    - Reads `demand_agg.json` with keys: r_out, r_ret, slot_minutes.
+    - For each scenario i, creates `scenario{i}.json` under `out_dir` with fields:
+      { nreq, requests: [{dir: OUT|RET, time: int}, ...] }.
+    - Request times are uniformly sampled within each slot's minute range.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = json.loads(Path(demand_agg_path).read_text(encoding="utf-8"))
+    r_out = list(map(int, data.get("r_out", [])))
+    r_ret = list(map(int, data.get("r_ret", [])))
+    slot_minutes = int(data.get("slot_minutes", 30))
+    T = max(len(r_out), len(r_ret))
+    rng = random.Random(seed)
 
+    paths: list[Path] = []
+    for sidx in range(1, num_scenarios + 1):
+        reqs = []
+        # OUT requests per slot
+        for t in range(T):
+            a = t * slot_minutes
+            b = (t + 1) * slot_minutes - 1
+            for _ in range(r_out[t] if t < len(r_out) else 0):
+                reqs.append({"dir": "OUT", "time": rng.randint(a, b)})
+        # RET requests per slot
+        for t in range(T):
+            a = t * slot_minutes
+            b = (t + 1) * slot_minutes - 1
+            for _ in range(r_ret[t] if t < len(r_ret) else 0):
+                reqs.append({"dir": "RET", "time": rng.randint(a, b)})
 
-def write_demand_files(demand: int, in_path: Path) -> Path:
-    # Determine horizon from config to bound request times
-    root = Path(__file__).resolve().parents[0]
-    cfg_path = root / "configs" / "base.yaml"
-    try:
-        base = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        horizon = int(base.get("time", {}).get("horizon_min", 120))
-    except Exception:
-        horizon = 120
-    hi = max(0, horizon - 1)
-
-    reqs = [
-        {"dir": random.choice(["OUT", "RET"]), "time": random.randint(0, hi)}
-        for _ in range(demand)
-    ]
-    obj = {"nreq": demand, "requests": reqs}
-
-    in_path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-    return in_path
+        # Sort requests by time (earliest first)
+        reqs.sort(key=lambda r: int(r.get("time", 0)))
+        obj = {"nreq": len(reqs), "requests": reqs}
+        out_path = out_dir / f"scenario{sidx}.json"
+        out_path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        paths.append(out_path)
+    return paths

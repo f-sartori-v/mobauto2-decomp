@@ -16,6 +16,8 @@ ILOSTLBEGIN
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <limits>
 
 extern "C" {
 #include "third_party/cjson/cJSON.h"
@@ -39,12 +41,13 @@ struct Trip {
 
 int main(int argc, char** argv){
     if (argc < 4){
-        std::fprintf(stderr, "usage: subproblem <subproblem.json> <requests.json> <out_result.json>\n");
+        std::fprintf(stderr, "usage: subproblem <subproblem.json> <requests.json> <out_result.json> [warm_start.json]\n");
         return 2;
     }
     const std::string sub_path = argv[1];
     const std::string req_path = argv[2];
     const std::string out_path = argv[3];
+    const std::string warm_path = (argc >= 5 ? argv[4] : "");
 
     // --------------------------
     // 1) Parse master output (sequences)
@@ -54,6 +57,7 @@ int main(int argc, char** argv){
     const cJSON* jQ  = cJSON_GetObjectItemCaseSensitive(jsub, "nbr_shuttles");
     const cJSON* jT  = cJSON_GetObjectItemCaseSensitive(jsub, "num_slots");
     const cJSON* jSh = cJSON_GetObjectItemCaseSensitive(jsub, "shuttles");
+    const cJSON* jTi = cJSON_GetObjectItemCaseSensitive(jsub, "sp_time_limit");
     if (!cJSON_IsObject(jSh)) die("subproblem.json missing 'shuttles' object");
 
     int Q = cJSON_IsNumber(jQ) ? (int) jQ->valuedouble : 0;
@@ -175,6 +179,41 @@ int main(int argc, char** argv){
     }
     const int K = (int)trips.size();
 
+    // Optional warm start: map (q,t)->tau suggestion from previous best scenario
+    std::vector<double> tauWarm(K, std::numeric_limits<double>::quiet_NaN());
+    if (!warm_path.empty()){
+        try {
+            std::string wt = slurp(warm_path);
+            if (!wt.empty()){
+                cJSON* jw = cJSON_Parse(wt.c_str());
+                if (jw){
+                    const cJSON* jTrips = cJSON_GetObjectItemCaseSensitive(jw, "trips");
+                    if (cJSON_IsArray(jTrips)){
+                        for (int i=0; i<cJSON_GetArraySize(jTrips); ++i){
+                            const cJSON* tk = cJSON_GetArrayItem(jTrips, i);
+                            const cJSON* jq = cJSON_GetObjectItemCaseSensitive(tk, "q");
+                            const cJSON* jt = cJSON_GetObjectItemCaseSensitive(tk, "t");
+                            const cJSON* jtau = cJSON_GetObjectItemCaseSensitive(tk, "tau");
+                            if (cJSON_IsNumber(jq) && cJSON_IsNumber(jt) && cJSON_IsNumber(jtau)){
+                                int q = (int)jq->valuedouble;
+                                int t = (int)jt->valuedouble;
+                                if (q >=0 && q < Q && t >=0 && t < T){
+                                    int k = tripIndexAt[q][t];
+                                    if (k >= 0 && k < K){
+                                        tauWarm[k] = jtau->valuedouble;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cJSON_Delete(jw);
+                }
+            }
+        } catch (...) {
+            // ignore warm start errors
+        }
+    }
+
     // Horizon stats for big-M
     int earliest_any = 0;
     int latest_any   = (T>0 ? theta(T-1) + delta_minutes : 0);
@@ -188,6 +227,7 @@ int main(int argc, char** argv){
     try {
         IloModel model(env);
         IloCplex cplex(model);
+        double solve_time_sec = 0.0;
 
         // Variables
         // tau[k] for trips (start time)
@@ -302,12 +342,39 @@ int main(int argc, char** argv){
         obj.end();
 
         // Parameters (tune as you like)
-        cplex.setParam(IloCplex::TiLim, 60.0);        // 60s limit
+        double tiLim = 300.0; // default
+        if (cJSON_IsNumber(jTi)) tiLim = jTi->valuedouble;
+        cplex.setParam(IloCplex::TiLim, tiLim);
         cplex.setParam(IloCplex::EpGap, 1e-4);        // MIP gap
         cplex.setParam(IloCplex::Threads, 0);         // all cores
         // cplex.setParam(IloCplex::MIPEmphasis, 1);   // 1=feasibility, 2=optimality
 
-        if (!cplex.solve()){
+        // Provide warm start if available (partial MIP start on tau)
+        {
+            IloNumVarArray startVars(env);
+            IloNumArray    startVals(env);
+            for (int k=0; k<K; ++k){
+                double v = tauWarm[k];
+                if (v == v) { // not NaN
+                    startVars.add(tau[k]);
+                    // clip to variable bounds just in case
+                    double lb = trips[k].e;
+                    double ub = trips[k].l;
+                    if (v < lb) v = lb;
+                    if (v > ub) v = ub;
+                    startVals.add(v);
+                }
+            }
+            if (startVars.getSize() > 0) {
+                cplex.addMIPStart(startVars, startVals, IloCplex::MIPStartAuto);
+            }
+        }
+
+        auto t0 = std::chrono::steady_clock::now();
+        bool ok = cplex.solve();
+        auto t1 = std::chrono::steady_clock::now();
+        solve_time_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (!ok){
             std::fprintf(stderr, "subproblem: no solution (status=%d)\n", (int)cplex.getStatus());
             cJSON_Delete(jsub); cJSON_Delete(jreq); env.end();
             return 1;
@@ -322,6 +389,7 @@ int main(int argc, char** argv){
         cJSON* jout = cJSON_CreateObject();
         cJSON_AddNumberToObject(jout, "objective", objval);
         cJSON_AddNumberToObject(jout, "alpha_unserved", A);
+        cJSON_AddNumberToObject(jout, "solve_time_sec", solve_time_sec);
 
         // Trip schedule: tau per (q,t) for trips
         cJSON* jTrips = cJSON_CreateArray();

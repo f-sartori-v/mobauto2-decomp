@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import yaml
-
-from subproblem import write_demand_files
+from subproblem import generate_scenarios_from_agg
 import platform, subprocess, time
 
 # Local paths (avoid importing from main to prevent cycles)
@@ -125,44 +124,56 @@ def choose_feasible_sequences(cfg: Cfg, seed: int | None = None) -> Dict[str, Di
 
 
 def solve_master(iterations: int = 1, seed: int | None = None) -> bool:
+    """Legacy helper: now generates aggregated demand and scenarios only.
+
+    - Writes outputs/demand_agg.json with slot-wise random counts.
+    - Generates 10 scenarios uniformly within slots.
+    """
     cfg = load_cfg(CONFIG)
-
-    demand_base = ROOT / "outputs" / "demand_base.json"
-    # simple random demand level for now; master can evolve later
     rng = random.Random(seed)
-    demand_level = 2 ** rng.randint(0, 10)
-    demand_path = write_demand_files(demand_level, demand_base)
 
-    # basic single-iteration loop scaffolding
-    best_ok = False
-    for it in range(max(1, iterations)):
-        sub_in = choose_feasible_sequences(cfg, seed=rng.randint(0, 10**9))
+    slot_minutes = cfg.operation.trip_duration
+    T = max(1, (cfg.time.horizon_min + slot_minutes - 1) // slot_minutes)
+    cap = cfg.fleet.shuttle_capacity
+    r_out = [rng.randint(0, cap + 3) for _ in range(T)]
+    r_ret = [rng.randint(0, cap + 3) for _ in range(T)]
 
-        in_path = ROOT / "outputs" / "subproblem.json"
-        in_path.write_text(json.dumps(sub_in, indent=2), encoding="utf-8")
+    (ROOT / "outputs").mkdir(exist_ok=True)
+    demand_agg_path = ROOT / "outputs" / "demand_agg.json"
+    sum_out = int(sum(r_out))
+    sum_ret = int(sum(r_ret))
+    demand_agg = {
+        "slots": T,
+        "slot_minutes": slot_minutes,
+        "r_out": r_out,
+        "r_ret": r_ret,
+        "sum_out": sum_out,
+        "sum_ret": sum_ret,
+        "sum_all": int(sum_out + sum_ret),
+    }
+    demand_agg_path.write_text(json.dumps(demand_agg, indent=2), encoding="utf-8")
 
-        # keep track of last master state
-        (ROOT / "outputs").mkdir(exist_ok=True)
-        (ROOT / "outputs" / "master_state.json").write_text(
-            json.dumps({
-                "iter": it,
-                "subproblem": sub_in,
-                "demand_file": str(demand_path),
-                "cfg": {
-                    "horizon_min": cfg.time.horizon_min,
-                    "trip_duration": cfg.operation.trip_duration,
-                    "battery_range": cfg.fleet.battery_range,
-                    "trip_distance": cfg.operation.trip_distance,
-                },
-            }, indent=2),
-            encoding="utf-8",
-        )
+    # Generate scenarios from aggregated demand
+    scen_dir = ROOT / "outputs" / "scenarios"
+    generate_scenarios_from_agg(demand_agg_path, scen_dir, num_scenarios=10, seed=seed)
 
-        ok = run_binary_with_config(C_BIN, in_path, demand_path, CONFIG)
-        best_ok = best_ok or ok
-        # In the future, parse subproblem results and add cuts/columns
+    # State dump
+    (ROOT / "outputs" / "master_state.json").write_text(
+        json.dumps({
+            "iter": 0,
+            "demand_agg_file": str(demand_agg_path),
+            "cfg": {
+                "horizon_min": cfg.time.horizon_min,
+                "trip_duration": cfg.operation.trip_duration,
+                "battery_range": cfg.fleet.battery_range,
+                "trip_distance": cfg.operation.trip_distance,
+                "shuttle_capacity": cfg.fleet.shuttle_capacity,
+            },
+        }, indent=2),
+        encoding="utf-8",
+    )
 
-    return best_ok
+    return True
 
 
 __all__ = [
