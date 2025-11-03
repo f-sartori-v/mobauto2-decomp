@@ -135,13 +135,11 @@ def build_master(M_CP_SRC: Path, M_OUT: Path):
         f'clang++ -O2 -std=c++17 '
         f'-I"{studio}/concert/include" '
         f'-I"{studio}/cplex/include" '
-        f'-I"{studio}/cpoptimizer/include" '
         f'-I"{CJSON_DIR}" '
         f'"{M_CP_SRC}" "{CJSON_OBJ}" '
         f'-L"{studio}/concert/lib/x86-64_osx/static_pic" '
         f'-L"{studio}/cplex/lib/x86-64_osx/static_pic" '
-        f'-L"{studio}/cpoptimizer/lib/x86-64_osx/static_pic" '
-        f'-lconcert -lilocplex -lcplex -lcp -lyaml-cpp -lpthread -lm '
+        f'-lconcert -lilocplex -lcplex -lyaml-cpp -lpthread -lm '
         f'-o "{M_OUT}"'
     )
     print(f"[build] {cmd}")
@@ -312,26 +310,19 @@ def subproblem_flow():
             print("[subproblem] scenario generation failed")
             return False
 
-    # Run subproblem across all scenarios and write per-scenario outputs, reusing best warm start
-    results_dir = ROOT / "outputs" / "scenario_results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    all_ok = True
-    best_obj: float | None = None
-    best_path: Path | None = None
+    # Combine scenarios into one multi-scenario JSON and run a single optimization
+    combined = {"scenarios": []}
     for scen_path in scen_list:
-        out_path = results_dir / f"{scen_path.stem}.json"
-        ok = run_subproblem_with_out(sub_in, scen_path, out_path, warm_start_path=best_path)
-        all_ok = all_ok and ok
-        # Update best warm start
         try:
-            res = json.loads(out_path.read_text(encoding="utf-8"))
-            obj = float(res.get("objective"))
-            if obj == obj and (best_obj is None or obj < best_obj):
-                best_obj = obj
-                best_path = out_path
-        except Exception:
-            pass
-    return all_ok
+            combined["scenarios"].append(json.loads(scen_path.read_text(encoding="utf-8")))
+        except Exception as e:
+            print(f"[subproblem] failed reading {scen_path}: {e}")
+            return False
+    combined_path = ROOT / "outputs" / "scenarios_combined.json"
+    combined_path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
+
+    out_path = ROOT / "outputs" / "subproblem_result.json"
+    return run_subproblem_with_out(sub_in, combined_path, out_path)
 
 
 def demand_only_flow(num_scenarios: int = 10, seed: int | None = None):

@@ -115,32 +115,61 @@ int main(int argc, char** argv){
     }
 
     // --------------------------
-    // 2) Parse exact requests
+    // 2) Parse exact requests (single or multi-scenario)
     // --------------------------
     cJSON* jreq = cJSON_Parse(slurp(req_path).c_str());
     if (!jreq) die("invalid requests.json");
-    const cJSON* jN   = cJSON_GetObjectItemCaseSensitive(jreq, "nreq");
-    const cJSON* jArr = cJSON_GetObjectItemCaseSensitive(jreq, "requests");
-    if (!cJSON_IsArray(jArr)) die("requests[] missing");
-    const int R_total = (int) (cJSON_IsNumber(jN) ? jN->valuedouble : cJSON_GetArraySize(jArr));
+    const cJSON* jSc = cJSON_GetObjectItemCaseSensitive(jreq, "scenarios");
+    int S_scen = cJSON_IsArray(jSc) ? cJSON_GetArraySize(jSc) : 1;
+    if (S_scen <= 0) die("empty scenarios list");
 
-    // Split requests by direction for leaner modeling
-    std::vector<int> req_time_OUT, req_time_RET; // minutes
-    std::vector<int> req_glob_index_OUT, req_glob_index_RET; // back-mapping
-    req_time_OUT.reserve(R_total); req_time_RET.reserve(R_total);
-    for (int i=0; i<R_total; ++i){
-        const cJSON* ri = cJSON_GetArrayItem(jArr, i);
-        const cJSON* d  = cJSON_GetObjectItemCaseSensitive(ri, "dir");
-        const cJSON* tm = cJSON_GetObjectItemCaseSensitive(ri, "time");
-        if (!cJSON_IsString(d) || !cJSON_IsNumber(tm)) die("bad request row");
-        const std::string dir = d->valuestring;
-        const int rtime = (int) tm->valuedouble;
-        if (dir=="OUT"){ req_time_OUT.push_back(rtime); req_glob_index_OUT.push_back(i); }
-        else if (dir=="RET"){ req_time_RET.push_back(rtime); req_glob_index_RET.push_back(i); }
-        else die("unknown request dir (expect OUT/RET)");
+    // For each scenario s, split requests by direction
+    std::vector<std::vector<int>> req_time_OUT_S(S_scen), req_time_RET_S(S_scen);
+    std::vector<int> R_OUT_S(S_scen, 0), R_RET_S(S_scen, 0);
+
+    if (cJSON_IsArray(jSc)) {
+        for (int s=0; s<S_scen; ++s){
+            const cJSON* sc = cJSON_GetArrayItem(jSc, s);
+            const cJSON* jArr = cJSON_GetObjectItemCaseSensitive(sc, "requests");
+            if (!cJSON_IsArray(jArr)) die("scenario requests[] missing");
+            const cJSON* jN = cJSON_GetObjectItemCaseSensitive(sc, "nreq");
+            const int R_total = (int) (cJSON_IsNumber(jN) ? jN->valuedouble : cJSON_GetArraySize(jArr));
+            req_time_OUT_S[s].reserve(R_total); req_time_RET_S[s].reserve(R_total);
+            for (int i=0; i<R_total; ++i){
+                const cJSON* ri = cJSON_GetArrayItem(jArr, i);
+                const cJSON* d  = cJSON_GetObjectItemCaseSensitive(ri, "dir");
+                const cJSON* tm = cJSON_GetObjectItemCaseSensitive(ri, "time");
+                if (!cJSON_IsString(d) || !cJSON_IsNumber(tm)) die("bad request row");
+                const std::string dir = d->valuestring;
+                const int rtime = (int) tm->valuedouble;
+                if (dir=="OUT"){ req_time_OUT_S[s].push_back(rtime); }
+                else if (dir=="RET"){ req_time_RET_S[s].push_back(rtime); }
+                else die("unknown request dir (expect OUT/RET)");
+            }
+            R_OUT_S[s] = (int)req_time_OUT_S[s].size();
+            R_RET_S[s] = (int)req_time_RET_S[s].size();
+        }
+    } else {
+        // Single scenario in legacy format {nreq, requests}
+        const cJSON* jN   = cJSON_GetObjectItemCaseSensitive(jreq, "nreq");
+        const cJSON* jArr = cJSON_GetObjectItemCaseSensitive(jreq, "requests");
+        if (!cJSON_IsArray(jArr)) die("requests[] missing");
+        const int R_total = (int) (cJSON_IsNumber(jN) ? jN->valuedouble : cJSON_GetArraySize(jArr));
+        req_time_OUT_S[0].reserve(R_total); req_time_RET_S[0].reserve(R_total);
+        for (int i=0; i<R_total; ++i){
+            const cJSON* ri = cJSON_GetArrayItem(jArr, i);
+            const cJSON* d  = cJSON_GetObjectItemCaseSensitive(ri, "dir");
+            const cJSON* tm = cJSON_GetObjectItemCaseSensitive(ri, "time");
+            if (!cJSON_IsString(d) || !cJSON_IsNumber(tm)) die("bad request row");
+            const std::string dir = d->valuestring;
+            const int rtime = (int) tm->valuedouble;
+            if (dir=="OUT"){ req_time_OUT_S[0].push_back(rtime); }
+            else if (dir=="RET"){ req_time_RET_S[0].push_back(rtime); }
+            else die("unknown request dir (expect OUT/RET)");
+        }
+        R_OUT_S[0] = (int)req_time_OUT_S[0].size();
+        R_RET_S[0] = (int)req_time_RET_S[0].size();
     }
-    const int R_OUT = (int)req_time_OUT.size();
-    const int R_RET = (int)req_time_RET.size();
 
     // --------------------------
     // 3) Build list of trips (variables tau) and “events” (sigma) per shuttle
@@ -258,86 +287,98 @@ int main(int argc, char** argv){
             }
         }
 
-        // Assignment variables z and request-level waits/unserved
+        // Assignment variables per scenario and request-level waits/unserved
         // We keep two direction partitions for memory efficiency.
-        IloBoolVarArray u_out(env, R_OUT), u_ret(env, R_RET);
-        IloNumVarArray  w_out(env, R_OUT), w_ret(env, R_RET);
-        for (int i=0; i<R_OUT; ++i){ u_out[i] = IloBoolVar(env); w_out[i] = IloNumVar(env, 0, IloInfinity); }
-        for (int i=0; i<R_RET; ++i){ u_ret[i] = IloBoolVar(env); w_ret[i] = IloNumVar(env, 0, IloInfinity); }
-
-        // z^{OUT}[k][i] (only for trips with dir=OUT), z^{RET}[k][i] for dir=RET
-        std::vector<IloBoolVarArray> z_out_by_trip, z_ret_by_trip;
-        z_out_by_trip.reserve(K); z_ret_by_trip.reserve(K);
-
-        for (int k=0; k<K; ++k){
-            if (trips[k].dir==0) { // OUT
-                z_out_by_trip.emplace_back(env, R_OUT);
-                for (int i=0;i<R_OUT;++i) z_out_by_trip.back()[i] = IloBoolVar(env);
-                z_ret_by_trip.emplace_back(env, 0); // empty placeholder
-            } else { // RET
-                z_out_by_trip.emplace_back(env, 0);
-                z_ret_by_trip.emplace_back(env, R_RET);
-                for (int i=0;i<R_RET;++i) z_ret_by_trip.back()[i] = IloBoolVar(env);
-            }
-        }
-
-        // Capacity per trip
-        for (int k=0; k<K; ++k){
-            if (trips[k].dir==0){
-                IloExpr sum(env);
-                for (int i=0;i<R_OUT;++i) sum += z_out_by_trip[k][i];
-                model.add( sum <= seat_capacity );
-                sum.end();
-            } else {
-                IloExpr sum(env);
-                for (int i=0;i<R_RET;++i) sum += z_ret_by_trip[k][i];
-                model.add( sum <= seat_capacity );
-                sum.end();
-            }
-        }
-
-        // Each request served at most once (in its direction)
-        // Also waiting-time linearization and release-time consistency
         const double A = 50.0; // penalty for unserved
-        // Maximum allowed waiting time (minutes)
-        const int WAIT_MAX = 30;
+        const int WAIT_MAX = 30; // Maximum allowed waiting time (minutes)
 
-        // OUT requests
-        for (int i=0;i<R_OUT;++i){
-            IloExpr served(env);
+        // Per-scenario variables
+        std::vector<IloBoolVarArray> u_out_S(S_scen), u_ret_S(S_scen);
+        std::vector<IloNumVarArray>  w_out_S(S_scen), w_ret_S(S_scen);
+        for (int s=0; s<S_scen; ++s){
+            u_out_S[s] = IloBoolVarArray(env, R_OUT_S[s]);
+            w_out_S[s] = IloNumVarArray(env, R_OUT_S[s]);
+            for (int i=0; i<R_OUT_S[s]; ++i){ u_out_S[s][i] = IloBoolVar(env); w_out_S[s][i] = IloNumVar(env, 0, IloInfinity); }
+            u_ret_S[s] = IloBoolVarArray(env, R_RET_S[s]);
+            w_ret_S[s] = IloNumVarArray(env, R_RET_S[s]);
+            for (int i=0; i<R_RET_S[s]; ++i){ u_ret_S[s][i] = IloBoolVar(env); w_ret_S[s][i] = IloNumVar(env, 0, IloInfinity); }
+        }
+
+        // z^{OUT}_s[k][i], z^{RET}_s[k][i]
+        std::vector<std::vector<IloBoolVarArray>> z_out_S(S_scen), z_ret_S(S_scen);
+        for (int s=0; s<S_scen; ++s){
+            z_out_S[s].reserve(K);
+            z_ret_S[s].reserve(K);
             for (int k=0; k<K; ++k){
                 if (trips[k].dir==0){
-                    served += z_out_by_trip[k][i];
-                    // time feasibility + waiting linking
-                    model.add( tau[k] >= req_time_OUT[i] - Mtime*(1.0 - z_out_by_trip[k][i]) );
-                    // enforce max wait: tau <= ready + WAIT_MAX when assigned
-                    model.add( tau[k] <= req_time_OUT[i] + WAIT_MAX + Mtime*(1.0 - z_out_by_trip[k][i]) );
-                    model.add( w_out[i] >= tau[k] - req_time_OUT[i] - Mtime*(1.0 - z_out_by_trip[k][i]) );
+                    z_out_S[s].emplace_back(env, R_OUT_S[s]);
+                    for (int i=0; i<R_OUT_S[s]; ++i) z_out_S[s].back()[i] = IloBoolVar(env);
+                    z_ret_S[s].emplace_back(env, 0);
+                } else {
+                    z_out_S[s].emplace_back(env, 0);
+                    z_ret_S[s].emplace_back(env, R_RET_S[s]);
+                    for (int i=0; i<R_RET_S[s]; ++i) z_ret_S[s].back()[i] = IloBoolVar(env);
                 }
             }
-            model.add( served + u_out[i] == 1 ); // served once or unserved
-            served.end();
-        }
-        // RET requests
-        for (int i=0;i<R_RET;++i){
-            IloExpr served(env);
-            for (int k=0; k<K; ++k){
-                if (trips[k].dir==1){
-                    served += z_ret_by_trip[k][i];
-                    model.add( tau[k] >= req_time_RET[i] - Mtime*(1.0 - z_ret_by_trip[k][i]) );
-                    // enforce max wait for RET as well
-                    model.add( tau[k] <= req_time_RET[i] + WAIT_MAX + Mtime*(1.0 - z_ret_by_trip[k][i]) );
-                    model.add( w_ret[i] >= tau[k] - req_time_RET[i] - Mtime*(1.0 - z_ret_by_trip[k][i]) );
-                }
-            }
-            model.add( served + u_ret[i] == 1 );
-            served.end();
         }
 
-        // Objective: minimize A*unserved + sum waiting
+        // Capacity per trip per scenario (not coupled across scenarios)
+        for (int s=0; s<S_scen; ++s){
+            for (int k=0; k<K; ++k){
+                if (trips[k].dir==0){
+                    IloExpr sum(env);
+                    for (int i=0;i<R_OUT_S[s];++i) sum += z_out_S[s][k][i];
+                    model.add( sum <= seat_capacity );
+                    sum.end();
+                } else {
+                    IloExpr sum(env);
+                    for (int i=0;i<R_RET_S[s];++i) sum += z_ret_S[s][k][i];
+                    model.add( sum <= seat_capacity );
+                    sum.end();
+                }
+            }
+        }
+
+        // Each request served at most once (in its scenario), waiting and time feasibility
+        for (int s=0; s<S_scen; ++s){
+            // OUT requests
+            for (int i=0;i<R_OUT_S[s];++i){
+                IloExpr served(env);
+                for (int k=0; k<K; ++k){
+                    if (trips[k].dir==0){
+                        served += z_out_S[s][k][i];
+                        // time feasibility + waiting linking (scenario-specific ready time)
+                        model.add( tau[k] >= req_time_OUT_S[s][i] - Mtime*(1.0 - z_out_S[s][k][i]) );
+                        model.add( tau[k] <= req_time_OUT_S[s][i] + WAIT_MAX + Mtime*(1.0 - z_out_S[s][k][i]) );
+                        model.add( w_out_S[s][i] >= tau[k] - req_time_OUT_S[s][i] - Mtime*(1.0 - z_out_S[s][k][i]) );
+                    }
+                }
+                model.add( served + u_out_S[s][i] == 1 );
+                served.end();
+            }
+            // RET requests
+            for (int i=0;i<R_RET_S[s];++i){
+                IloExpr served(env);
+                for (int k=0; k<K; ++k){
+                    if (trips[k].dir==1){
+                        served += z_ret_S[s][k][i];
+                        model.add( tau[k] >= req_time_RET_S[s][i] - Mtime*(1.0 - z_ret_S[s][k][i]) );
+                        model.add( tau[k] <= req_time_RET_S[s][i] + WAIT_MAX + Mtime*(1.0 - z_ret_S[s][k][i]) );
+                        model.add( w_ret_S[s][i] >= tau[k] - req_time_RET_S[s][i] - Mtime*(1.0 - z_ret_S[s][k][i]) );
+                    }
+                }
+                model.add( served + u_ret_S[s][i] == 1 );
+                served.end();
+            }
+        }
+
+        // Objective: minimize average over scenarios of (A*unserved + sum waiting)
         IloExpr obj(env);
-        for (int i=0;i<R_OUT;++i){ obj += A * u_out[i] + w_out[i]; }
-        for (int i=0;i<R_RET;++i){ obj += A * u_ret[i] + w_ret[i]; }
+        for (int s=0; s<S_scen; ++s){
+            for (int i=0;i<R_OUT_S[s];++i){ obj += A * u_out_S[s][i] + w_out_S[s][i]; }
+            for (int i=0;i<R_RET_S[s];++i){ obj += A * u_ret_S[s][i] + w_ret_S[s][i]; }
+        }
+        // Average is obj / S_scen (constant factor), equivalent for optimization
         model.add(IloMinimize(env, obj));
         obj.end();
 
@@ -381,13 +422,14 @@ int main(int argc, char** argv){
         }
 
         const double objval = cplex.getObjValue();
-        std::printf("[sp] status=%d obj=%.3f\n", (int)cplex.getStatus(), objval);
+        std::printf("[sp] status=%d obj=%.3f S=%d time=%.3f s\n", (int)cplex.getStatus(), objval, S_scen, solve_time_sec);
 
         // --------------------------
         // 5) Emit result JSON
         // --------------------------
         cJSON* jout = cJSON_CreateObject();
-        cJSON_AddNumberToObject(jout, "objective", objval);
+        cJSON_AddNumberToObject(jout, "objective_sum", objval);
+        cJSON_AddNumberToObject(jout, "objective_avg", (S_scen>0 ? objval / (double)S_scen : objval));
         cJSON_AddNumberToObject(jout, "alpha_unserved", A);
         cJSON_AddNumberToObject(jout, "solve_time_sec", solve_time_sec);
 
@@ -403,39 +445,31 @@ int main(int argc, char** argv){
         }
         cJSON_AddItemToObject(jout, "trips", jTrips);
 
-        // Served counts by trip
-        cJSON* jCap = cJSON_CreateArray();
-        for (int k=0; k<K; ++k){
-            int served_k = 0;
-            if (trips[k].dir==0){
-                for (int i=0;i<R_OUT;++i) if (cplex.getValue(z_out_by_trip[k][i]) > 0.5) served_k++;
-            } else {
-                for (int i=0;i<R_RET;++i) if (cplex.getValue(z_ret_by_trip[k][i]) > 0.5) served_k++;
+        // Scenario metrics
+        cJSON* jScMet = cJSON_CreateArray();
+        for (int s=0; s<S_scen; ++s){
+            int served_total = 0, unserved_total = 0;
+            double waiting_sum = 0.0;
+            for (int i=0;i<R_OUT_S[s];++i){
+                if (cplex.getValue(u_out_S[s][i]) > 0.5) unserved_total++;
+                else served_total++;
+                waiting_sum += cplex.getValue(w_out_S[s][i]);
             }
-            cJSON* ck = cJSON_CreateObject();
-            cJSON_AddNumberToObject(ck, "q", trips[k].q);
-            cJSON_AddNumberToObject(ck, "t", trips[k].t);
-            cJSON_AddNumberToObject(ck, "served", served_k);
-            cJSON_AddItemToArray(jCap, ck);
+            for (int i=0;i<R_RET_S[s];++i){
+                if (cplex.getValue(u_ret_S[s][i]) > 0.5) unserved_total++;
+                else served_total++;
+                waiting_sum += cplex.getValue(w_ret_S[s][i]);
+            }
+            double obj_s = 50.0 * unserved_total + waiting_sum;
+            cJSON* js = cJSON_CreateObject();
+            cJSON_AddNumberToObject(js, "scenario_index", s);
+            cJSON_AddNumberToObject(js, "served_total", served_total);
+            cJSON_AddNumberToObject(js, "unserved_total", unserved_total);
+            cJSON_AddNumberToObject(js, "waiting_sum", waiting_sum);
+            cJSON_AddNumberToObject(js, "objective", obj_s);
+            cJSON_AddItemToArray(jScMet, js);
         }
-        cJSON_AddItemToObject(jout, "served_per_trip", jCap);
-
-        // Totals
-        int served_total = 0, unserved_total = 0;
-        double waiting_sum = 0.0;
-        for (int i=0;i<R_OUT;++i){
-            if (cplex.getValue(u_out[i]) > 0.5) unserved_total++;
-            else served_total++;
-            waiting_sum += cplex.getValue(w_out[i]);
-        }
-        for (int i=0;i<R_RET;++i){
-            if (cplex.getValue(u_ret[i]) > 0.5) unserved_total++;
-            else served_total++;
-            waiting_sum += cplex.getValue(w_ret[i]);
-        }
-        cJSON_AddNumberToObject(jout, "served_total", served_total);
-        cJSON_AddNumberToObject(jout, "unserved_total", unserved_total);
-        cJSON_AddNumberToObject(jout, "waiting_sum", waiting_sum);
+        cJSON_AddItemToObject(jout, "scenario_metrics", jScMet);
 
         // write file
         {

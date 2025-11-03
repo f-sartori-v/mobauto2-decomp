@@ -1,7 +1,9 @@
 // CP Master scaffolding (C++): read YAML config and demand_agg.json,
 // echo a summary, copy the demand file next to the output, and write a stub subproblem.json.
 
-#include <ilcp/cp.h>
+// Switch to CPLEX Concert MILP API
+#include <ilcplex/ilocplex.h>
+ILOSTLBEGIN
 #include <yaml-cpp/yaml.h>
 #include <iostream>
 #include <fstream>
@@ -119,7 +121,7 @@ int main(int argc, char** argv) {
     try {
       // Create the model
       IloModel model(env);
-      IloCP cp(env);
+      IloCplex cplex(env);
 
       const int T = num_slots;       // demand slots
       const int Tact = T + 1;        // action slots (one extra to serve last-slot demand)
@@ -262,27 +264,32 @@ int main(int argc, char** argv) {
       tripCount.end();
 
       // --- Solve ---
-      cp.setParameter(IloCP::TimeLimit, time_limit);
-      // Map search_type from config to CP Optimizer parameter, if recognized
+      // Basic time limit
+      cplex.setParam(IloCplex::TiLim, (double) time_limit);
+      // Map search_type to rough CPLEX settings (not 1:1 with CP Optimizer)
       if (search_type == "auto") {
           // default; do nothing
       } else if (search_type == "depth_first") {
-          cp.setParameter(IloCP::SearchType, IloCP::DepthFirst);
+          // 0 = depth-first, 1 = best-bound, 2 = best-estimate, 3 = strong branching
+          cplex.setParam(IloCplex::NodeSel, 0);
       } else if (search_type == "restart") {
-          cp.setParameter(IloCP::SearchType, IloCP::Restart);
+          // 1 = emphasize feasibility (rough analogue to restart behavior)
+          cplex.setParam(IloCplex::MIPEmphasis, 1);
       } else if (search_type == "multi_point") {
-          cp.setParameter(IloCP::SearchType, IloCP::MultiPoint);
+          // Parallel opportunistic with all cores
+          cplex.setParam(IloCplex::Threads, 0); // all cores
+          cplex.setParam(IloCplex::ParallelMode, 1); // 1 = opportunistic
       } else {
           std::cerr << "[cp-master] warn: unknown search_type '" << search_type << "' (using default)\n";
       }
-      // cp.setParameter(IloCP::LogVerbosity, IloCP::Verbose);
-      cp.extract(model);
-      bool ok = cp.solve();
+      cplex.extract(model);
+      bool ok = cplex.solve();
       if (!ok) {
         std::cerr << "[cp-master] no solution\n";
         exit_code = 1;
       } else {
-        std::cout << "[cp-master] obj=" << (long long)cp.getObjValue() << "\n";
+        std::cout.setf(std::ios::fixed); std::cout.precision(3);
+        std::cout << "[cp-master] obj=" << cplex.getObjValue() << "\n";
       }
 
       if (exit_code == 0) {
@@ -300,9 +307,9 @@ int main(int argc, char** argv) {
           cJSON *arr = cJSON_CreateArray();
           for (int t = 0; t < Tact; ++t) {
             const char *lab = "NUL";
-            if (cp.getValue(xOUT[q][t]) > 0.5) lab = "OUT";
-            else if (cp.getValue(xRET[q][t]) > 0.5) lab = "RET";
-            else if (cp.getValue(xCHR[q][t]) > 0.5) lab = "CRG";
+            if (cplex.getValue(xOUT[q][t]) > 0.5) lab = "OUT";
+            else if (cplex.getValue(xRET[q][t]) > 0.5) lab = "RET";
+            else if (cplex.getValue(xCHR[q][t]) > 0.5) lab = "CRG";
             cJSON_AddItemToArray(arr, cJSON_CreateString(lab));
           }
           cJSON_AddItemToObject(Sj, "seq", arr);
