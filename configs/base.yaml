@@ -3,13 +3,13 @@ project_name: MOB-AUTO2 Shuttle Scheduling Decomposition Problem
 
 # Time configuration
 time:
-  horizon_min: 630
-  step_res: 30
+  time_res: 30
+  horizon_min: 0
 
 # Fleet and shuttle specs
 fleet:
-  nbr_shuttles: 2
-  shuttle_capacity: 15        # pax
+  nbr_shuttles: 1
+  shuttle_capacity: 5        # pax
   battery_range: 150          # range in KM
   recharge_rate_fast: 1.25    # KM per min
   recharge_threshold_fast: 75 # KM
@@ -21,11 +21,36 @@ fleet:
 # Operation specs
 operation:
   trip_duration: 30
-  trip_distance: 28
+  trip_distance: 30
+
+# Scenario generation (for --mode demand / scenarios)
+scenarios:
+  # Where to write the aggregated demand JSON (relative to repo root or absolute)
+  demand_agg_path: outputs/q1d30_align_nsat/demand_agg.json
+  # Directory to write generated scenarios
+  dir: outputs/q1d30_align_nsat
+  # Optional: specific scenario file to read instead of generating.
+  # If relative, it is resolved under data/scenarios/ (e.g., "scenario1.json" or "my_scen.csv").
+  file: null
+  # Number of scenarios to generate
+  num: 1
+  # Random minutes within slot (true) or align to slot start (false)
+  random_minutes: false
 
 # Solver configuration (CPO)
 solver:
   time_limit: 5                 # seconds for main problem CP
-  subproblem_time_limit: 3600    # seconds for subproblem MILP
+  subproblem_time_limit: 300    # seconds for subproblem MILP
   log_verbosity: 'Quiet'        # values: quiet, terse, normal, verbose
   search_type: 'Auto'      # values = ('DepthFirst', 'Restart', 'MultiPoint', 'IterativeDiving', 'Neighborhood', 'Auto')
+
+# Input paths and demand configuration
+data:
+  # If json=true OR load_demand=false, subproblem reads json_file directly.
+  json: false
+  load_demand: true
+  json_file: null
+  # Alternatively, set demand_file to a JSON/CSV scenario; ignored when json=true or load_demand=false.
+  demand_file: null
+  # For generators that synthesize demand (unused when json=true or load_demand=false)
+  random_demand: false

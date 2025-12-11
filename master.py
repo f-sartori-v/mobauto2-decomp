@@ -140,16 +140,11 @@ def solve_master(iterations: int = 1, seed: int | None = None) -> bool:
 
     (ROOT / "outputs").mkdir(exist_ok=True)
     demand_agg_path = ROOT / "outputs" / "demand_agg.json"
-    sum_out = int(sum(r_out))
-    sum_ret = int(sum(r_ret))
     demand_agg = {
         "slots": T,
         "slot_minutes": slot_minutes,
         "r_out": r_out,
         "r_ret": r_ret,
-        "sum_out": sum_out,
-        "sum_ret": sum_ret,
-        "sum_all": int(sum_out + sum_ret),
     }
     demand_agg_path.write_text(json.dumps(demand_agg, indent=2), encoding="utf-8")
 
